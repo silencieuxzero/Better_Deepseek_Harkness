@@ -23,6 +23,13 @@
   - `treeRoot`：侧栏文件树根目录（留空 = 最近注册的工作区，其次进程工作目录）
 - **侧栏文件树**：在侧栏底部提供工作区文件浏览（`GET /ext/api/tree`），逐级展开目录，目录显示子项数、文件显示大小，每行可一键复制路径；支持全部收起与根目录配置（设置项 `treeRoot`；留空时默认最近注册的工作区，其次进程工作目录）；点击面板外部或按 Esc 自动收起；点击文件在弹窗编辑器中打开，可保存（仅限树根内既有文件，1 MiB 上限，二进制/NUL 防护）
 - **多终端**：对话页顶部「对话 / 轨迹 / 终端」页签（`conversation.view` slot）新增「终端」，可自主创建 **CMD** 或 **PowerShell** 终端并多开（上限 8 个）；左侧为活动终端（输出区 + 命令输入行 + 中断按钮），右侧列出全部终端（切换 / 关闭）；终端默认在工作区（文件树根）启动，输出通过轮询增量拉取；基于 node-pty（缺失时回退普通管道），插件卸载时自动清理全部终端进程
+- **Git 面板**：对话页顶部页签新增「Git」（`conversation.view` slot，`ext-center.git`），VSCode「源代码管理」风格：
+  - 顶部工具条：分支下拉切换、上游/领先/落后徽章、拉取（--ff-only）/ 推送 / 刷新
+  - 提交区：多行提交信息（Ctrl+Enter 提交）；按钮显示已暂存数量；无暂存或有合并冲突时禁用并提示
+  - 更改分组：已暂存的更改 / 未暂存的更改 / 未跟踪的文件，含 VSCode 配色状态徽章（M/A/D/R/冲突/未跟踪）、重命名来源、行内「+ / − / ✕」（暂存 / 取消暂存 / 放弃更改，放弃需确认）；组头「全部暂存 / 全部取消暂存」
+  - 差异视图：点击文件查看统一 diff（行号 + 增删/上下文/块头着色）；未跟踪文件以全新增形式展示；二进制文件与超大差异有提示；合并冲突以合并 diff 原样展示
+  - 提交历史：最近 30 条（短哈希 / 作者 / 时间 / 主题）
+  - 状态每 5 秒自动刷新；仓库自动从文件树根向上查找 .git；所有操作由主机侧 git 子进程执行（GIT_TERMINAL_PROMPT=0，防挂起）
 - **工具参数自动修复**：通过 `tools/execute` 包装层修复模型偶发的参数抖动——`description` 缺失 / 为空 / 类型错误时自动补上中性占位符；`arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象，避免无谓的 `INVALID_ARGS` 报错
 
 ## 安装
@@ -96,6 +103,19 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | `POST /ext/api/terminal/resize` | `{id, cols, rows}` 调整终端尺寸（pty 模式生效） |
 | `POST /ext/api/terminal/kill` | `{id}` 关闭终端（幂等） |
 | `GET /ext/api/terminal/output?id=..&after=..` | 轮询增量输出：`after` 为客户端已读长度，返回 `{alive, exitCode, text}` |
+| `GET /ext/api/git/status` | Git 状态：仓库根、分支、上游、领先/落后、更改列表（含 staged/unstaged/untracked/重命名/冲突标记） |
+| `GET /ext/api/git/diff?path=..&staged=0|1` | 单文件 diff（结构化为 meta/hunk/ctx/add/del 行，带双侧行号；未跟踪文件按全新增合成；合并冲突按 combined 原样返回） |
+| `GET /ext/api/git/log?n=30` | 最近提交（oid/short/author/time/subject） |
+| `GET /ext/api/git/branches` | 分支列表（含 current 标记） |
+| `POST /ext/api/git/stage` | `{paths:[...]}` 暂存（git add） |
+| `POST /ext/api/git/stage-all` | 全部暂存（git add -A） |
+| `POST /ext/api/git/unstage` | `{paths:[...]}` 取消暂存（git restore --staged） |
+| `POST /ext/api/git/unstage-all` | 全部取消暂存（git reset） |
+| `POST /ext/api/git/commit` | `{message}` 提交（git commit -m） |
+| `POST /ext/api/git/discard` | `{paths:[...]}` 放弃更改（git checkout --；未跟踪文件直接删除，拒绝目录） |
+| `POST /ext/api/git/checkout` | `{branch}` 切换分支（名称白名单校验） |
+| `POST /ext/api/git/pull` | 拉取（--ff-only，60 秒超时） |
+| `POST /ext/api/git/push` | 推送（60 秒超时） |
 | `POST /ext/api/config` | 写 `ext-center` 设置命名空间（`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot`） |
 | `POST /ext/api/skill/install` | `{name, text?\|url?\|path?}` 安装技能 |
 | `POST /ext/api/skill/uninstall` | `{name}` 卸载技能 |
