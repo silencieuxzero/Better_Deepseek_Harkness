@@ -18,8 +18,8 @@
   - `allowLan`：是否允许局域网通过 `/ext/api` 写入（默认仅本机回环）
   - `skillRoot`：技能安装根目录（留空 = `~/.dsh/skills`）
   - `customSkillDirs`：额外技能目录，每行一个；其中的技能会通过本插件注册的 provider 提供给所有会话
-  - `treeRoot`：侧栏文件树根目录（留空 = 工作目录）
-- **侧栏文件树**：在侧栏底部提供工作区文件浏览（`GET /ext/api/tree`），逐级展开目录，目录显示子项数、文件显示大小，每行可一键复制路径；支持全部收起与根目录配置（设置项 `treeRoot`，留空 = 工作目录）
+  - `treeRoot`：侧栏文件树根目录（留空 = 最近注册的工作区，其次进程工作目录）
+- **侧栏文件树**：在侧栏底部提供工作区文件浏览（`GET /ext/api/tree`），逐级展开目录，目录显示子项数、文件显示大小，每行可一键复制路径；支持全部收起与根目录配置（设置项 `treeRoot`；留空时默认最近注册的工作区，其次进程工作目录）
 - **工具参数自动修复**：通过 `tools/execute` 包装层修复模型偶发的参数抖动——`description` 缺失 / 为空 / 类型错误时自动补上中性占位符；`arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象，避免无谓的 `INVALID_ARGS` 报错
 
 ## 安装
@@ -84,7 +84,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | 端点 | 说明 |
 | --- | --- |
 | `GET /ext/api/state` | 全量状态：技能列表、插件安装记录、加载器条目、配置 |
-| `GET /ext/api/tree?path=...` | 文件树：列出根目录（默认工作目录）下的一级条目（含 type / size / mtime / children 计数与 truncated 截断标记）；相对路径可选，根目录可用 `treeRoot` 设置 |
+| `GET /ext/api/tree?path=...` | 文件树：列出根目录下的一级条目（含 type / size / mtime / children 计数与 truncated 截断标记）；根目录解析：`treeRoot` 设置 → 最近注册的工作区 → 进程工作目录；相对路径可选 |
 | `POST /ext/api/config` | 写 `ext-center` 设置命名空间（`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot`） |
 | `POST /ext/api/skill/install` | `{name, text?\|url?\|path?}` 安装技能 |
 | `POST /ext/api/skill/uninstall` | `{name}` 卸载技能 |
@@ -102,6 +102,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 - 技能/插件列表与加载器状态由 `GET /ext/api/state` 提供；客户端通过 `fetch` 调用
 - 本插件自身的偏好走原生 `ctx.settings` 命名空间（`ext-center`），浏览器侧用 `settingsScope` 读写
 - 通过 `tools/execute` waterfall（与 `dsh-tool-call-timeout-policy` 同机制）在参数校验前修复模型生成的工具参数；只修安全的 `description` 与可恢复的 JSON 字符串，绝不伪造 `code` / `command` 等内容字段
+- 文件树根目录解析：`treeRoot` 设置 → `ctx.workspaceRegistry` 最近注册的工作区 → 进程 `cwd`；因此未配置时默认展示最近使用的工作区
 
 ## 目录结构
 
