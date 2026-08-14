@@ -1,6 +1,6 @@
 {
   "name": "better-deepseek-harness",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Better DeepSeek Harness — install and manage skills and plugins from the Web UI settings page.",
   "type": "module",
   "main": "lib/index.js",
@@ -11,6 +11,9 @@
   },
   "files": [
     "lib",
+    "src",
+    "tests",
+    "docs",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -22,10 +25,22 @@
     "skill",
     "settings"
   ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-js.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm test"
+  },
   "dependencies": {
     "js-yaml": "^4.1.0",
     "@deepseek-ai/schemastery": "^3.18.0",
     "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.5"
   },
   "dsh": {
     "bundle": {

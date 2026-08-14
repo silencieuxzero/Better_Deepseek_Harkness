@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 # This repository's root *is* the package — copy its contents (skip .git history
 # and never copy into ourselves if $target happens to live under $here).
 Get-ChildItem -Force -Path $here |
-  Where-Object { $_.Name -ne ".git" -and $_.FullName -ne $target -and -not $_.FullName.StartsWith($target + [IO.Path]::DirectorySeparatorChar) } |
+  Where-Object { $_.Name -ne ".git" -and $_.Name -ne "node_modules" -and $_.FullName -ne $target -and -not $_.FullName.StartsWith($target + [IO.Path]::DirectorySeparatorChar) } |
   ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force }
 
 # Append the insert row if absent (id-based dedupe on a comment marker).

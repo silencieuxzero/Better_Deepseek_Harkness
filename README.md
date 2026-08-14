@@ -22,16 +22,16 @@
   - `customSkillDirs`：额外技能目录，每行一个；其中的技能会通过本插件注册的 provider 提供给所有会话
   - `treeRoot`：侧栏文件树根目录（留空 = 最近注册的工作区，其次进程工作目录）
 - **侧栏文件树**：在侧栏底部提供工作区文件浏览（`GET /ext/api/tree`），逐级展开目录，目录显示子项数、文件显示大小，每行可一键复制路径；支持全部收起与根目录配置（设置项 `treeRoot`；留空时默认最近注册的工作区，其次进程工作目录）；点击面板外部或按 Esc 自动收起；点击文件在弹窗编辑器中打开，可保存（仅限树根内既有文件，1 MiB 上限，二进制/NUL 防护）
-- **多终端**：对话页顶部「对话 / 轨迹 / 终端」页签（`conversation.view` slot）新增「终端」，可自主创建 **CMD** 或 **PowerShell** 终端并多开（上限 8 个）；左侧为活动终端（输出区 + 命令输入行 + 中断按钮），右侧列出全部终端（切换 / 关闭）；终端默认在工作区（文件树根）启动，输出通过轮询增量拉取；基于 node-pty（缺失时回退普通管道），插件卸载时自动清理全部终端进程
+- **多终端**：对话页顶部「对话 / 轨迹 / 终端」页签（`conversation.view` slot）新增「终端」，可自主创建 **CMD** 或 **PowerShell** 终端并多开（上限可配置，默认 8 个）；左侧为活动终端（输出区 + 命令输入行 + 中断按钮），右侧列出全部终端（切换 / 关闭）；终端默认在工作区（文件树根）启动，输出通过轮询增量拉取；基于 node-pty（缺失时回退普通管道），插件卸载时自动清理全部终端进程
 - **Git 面板**：对话页顶部页签新增「Git」（`conversation.view` slot，`ext-center.git`），VSCode「源代码管理」风格：
   - 顶部工具条：分支下拉切换、上游/领先/落后徽章、拉取（--ff-only）/ 推送 / 刷新
   - 提交区：多行提交信息（Ctrl+Enter 提交）；按钮显示已暂存数量；无暂存或有合并冲突时禁用并提示
   - 更改分组：已暂存的更改 / 未暂存的更改 / 未跟踪的文件，含 VSCode 配色状态徽章（M/A/D/R/冲突/未跟踪）、重命名来源、行内「+ / − / ✕」（暂存 / 取消暂存 / 放弃更改，放弃需确认）；组头「全部暂存 / 全部取消暂存」
   - 差异视图：点击文件查看统一 diff（行号 + 增删/上下文/块头着色）；未跟踪文件以全新增形式展示；二进制文件与超大差异有提示；合并冲突以合并 diff 原样展示
-  - 提交历史：最近 30 条（短哈希 / 作者 / 时间 / 主题）
-  - 状态每 5 秒自动刷新；仓库自动从文件树根向上查找 .git；所有操作由主机侧 git 子进程执行（GIT_TERMINAL_PROMPT=0，防挂起）
+  - 提交历史：最近提交（条数可配置，默认 30；短哈希 / 作者 / 时间 / 主题）
+  - 状态自动刷新（间隔可配置，默认 5 秒）；仓库自动从文件树根向上查找 .git；所有操作由主机侧 git 子进程执行（GIT_TERMINAL_PROMPT=0，防挂起）
 - **MCP 服务器**：设置页新增「MCP」页签——添加自定义 MCP 服务器（stdio 本地命令 / streamable-http 远程 URL，支持参数、环境变量、工作目录、请求头、调用超时）；每个服务器写为 cordis.patch.yml 中的一行 `@deepseek-ai/dsh-mcp-client` 条目（id `ext-center.mcp.<名称>`），由配置监听器**热生效**；列表实时显示加载器状态（运行中/失败/已停用）并支持启用/停用/移除；服务器工具以 `mcp__<名称>__<工具名>` 提供给模型；手写的外部 MCP 行只读展示
-- **图片转述**：设置页新增「图片转述」配置——启用后，含图片的模型请求在进入文本模型前，先由用户指定的视觉模型（提供方 / 模型 / 提示词 / 单次上限 1-8）通过 `llm/stream` 瀑布包装转述成文字（仅替换本次请求中的图片块，会话记录原图不受影响）；转述失败自动降级为占位文本；主模型与转述模型同路由时原生图片直通；提供方下拉来自已注册的 LLM 路由（`/ext/api/state` 的 `llmProviders`）
+- **图片转述**：设置页新增「图片转述」配置——启用后，含图片的模型请求在进入文本模型前，先由用户指定的视觉模型（提供方 / 模型 / 提示词 / 单次上限 1-8，部署上限可配置）通过 `llm/stream` 瀑布包装转述成文字（仅替换本次请求中的图片块，会话记录原图不受影响）；转述失败自动降级为占位文本；主模型与转述模型同路由时原生图片直通；提供方下拉来自已注册的 LLM 路由（`/ext/api/state` 的 `llmProviders`）
 - **工具参数自动修复**：通过 `tools/execute` 包装层修复模型偶发的参数抖动——`description` 缺失 / 为空 / 类型错误时自动补上中性占位符；`arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象，避免无谓的 `INVALID_ARGS` 报错
 
 ## 安装
@@ -82,6 +82,44 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 
 本包在 package.json 的 `dsh.bundle.patch` 中声明的补丁文件（`cordis.patch.yml`）会插入同名（`ext-center`）行，与方式一、方式二按 id 去重、不冲突。
 
+## 部署配置（ext-center 行的 config 块）
+
+部署可调的行为全部收敛在 cordis.patch.yml 中 `ext-center` 行的 `config:` 块，用 schemastery 校验：每个字段自带默认值与合法范围，非法值会让插件**加载失败并给出明确报错**（宁可响亮失败，不静默漂移）。安全不变量（请求体 2 MiB、文件编辑器 1 MiB、终端单次写入 4096 字符、git 单批路径 500 条）保持固定、不可配置。
+
+```yaml
+- insert:
+    - id: ext-center
+      name: better-deepseek-harness
+      config:
+        pluginRoot: ""            # 插件安装根；留空 = profile 共享模块根 node_modules
+        tree:
+          maxEntries: 2000        # 单目录最多返回条目数
+          ignores: [".git", ".svn", ".hg", "node_modules", ".dsh", "dist", ".next",
+                    ".cache", ".turbo", "coverage", "__pycache__", ".DS_Store"]
+        terminal:
+          maxSessions: 8          # 终端并发上限（1-64）
+          bufferLimit: 262144     # 每个终端的输出环形缓冲（字节）
+        git:
+          timeoutMs: 60000        # 单条 git 命令超时（毫秒）
+          diffLimit: 524288       # 单文件 diff 载荷上限（字节，超出截断）
+          logMax: 30              # 提交历史条数
+        mcp:
+          maxServers: 16          # 面板管理的 MCP 服务器上限
+        vision:
+          maxImagesCap: 8         # 单次请求转述图片的部署上限（设置页的 1-N 以此为界）
+          maxTokens: 1024         # 单次转述调用的输出 token 上限
+        toolRepair:
+          enabled: true           # tools/execute 参数修复总开关
+          descriptionFill: "Execute tool"   # description 缺失时的中性占位文案
+        client:
+          terminalPollMs: 300     # 浏览器终端输出轮询间隔
+          terminalListPollMs: 2000
+          gitPollMs: 5000         # 浏览器 git 状态轮询间隔
+          mcpPollMs: 3000
+```
+
+以上全部字段均可省略（省略即取默认值）；`config:` 块本身也可省略。改完后配置监听器热生效（config 属于 ext-center 行的元数据，同样由监听器重放）。Web UI 通过 `/ext/api/state` 的 `limits` 块读取这些上限，界面文案（「前 2000 项」「上限 8 个」等）与轮询节奏随之自动跟随。
+
 ## 使用
 
 1. 打开 Web UI → 设置（齿轮）→ **更好的 DeepSeek Harness**
@@ -95,12 +133,12 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 
 | 端点 | 说明 |
 | --- | --- |
-| `GET /ext/api/state` | 全量状态：技能列表、插件安装记录、加载器条目、配置 |
-| `GET /ext/api/tree?path=...` | 文件树：列出根目录下的一级条目（含 type / size / mtime / children 计数与 truncated 截断标记）；根目录解析：`treeRoot` 设置 → 最近注册的工作区 → 进程工作目录；相对路径可选 |
+| `GET /ext/api/state` | 全量状态：技能列表、插件安装记录、加载器条目、配置，以及 `limits`（各上限与客户端轮询间隔，见「部署配置」） |
+| `GET /ext/api/tree?path=...` | 文件树：列出根目录下的一级条目（含 type / size / mtime / children 计数、`truncated` 截断标记与 `maxEntries` 上限）；根目录解析：`treeRoot` 设置 → 最近注册的工作区 → 进程工作目录；相对路径可选 |
 | `GET /ext/api/tree/content?path=...` | 读取树根内一个文本文件（拒绝目录 / 超大 / 含 NUL 的二进制），供编辑器打开 |
 | `POST /ext/api/tree/write` | `{path, content}` 原子写回树根内既有文件（临时文件 + rename；同样有大小与二进制防护） |
 | `GET /ext/api/terminal/list` | 全部终端会话（id / kind / cwd / alive / exitCode / createdAt） |
-| `POST /ext/api/terminal/create` | `{kind:'cmd'\|'powershell'}` 新建终端（上限 8 个；cwd = 文件树根）；返回 `{id, kind, cwd}` |
+| `POST /ext/api/terminal/create` | `{kind:'cmd'\|'powershell'}` 新建终端（上限 = 部署配置 `terminal.maxSessions`，默认 8；cwd = 文件树根）；返回 `{id, kind, cwd}` |
 | `POST /ext/api/terminal/write` | `{id, data}` 向终端写入输入（单次 ≤ 4096 字符；已退出终端拒绝） |
 | `POST /ext/api/terminal/resize` | `{id, cols, rows}` 调整终端尺寸（pty 模式生效） |
 | `POST /ext/api/terminal/kill` | `{id}` 关闭终端（幂等） |
@@ -116,9 +154,9 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | `POST /ext/api/git/commit` | `{message}` 提交（git commit -m） |
 | `POST /ext/api/git/discard` | `{paths:[...]}` 放弃更改（git checkout --；未跟踪文件直接删除，拒绝目录） |
 | `POST /ext/api/git/checkout` | `{branch}` 切换分支（名称白名单校验） |
-| `POST /ext/api/git/pull` | 拉取（--ff-only，60 秒超时） |
-| `POST /ext/api/git/push` | 推送（60 秒超时） |
-| `GET /ext/api/mcp/list` | MCP 服务器列表（面板管理的行 + 外部手写行，含配置摘要与加载器状态） |
+| `POST /ext/api/git/pull` | 拉取（--ff-only，超时 = 部署配置 `git.timeoutMs`，默认 60 秒） |
+| `POST /ext/api/git/push` | 推送（超时 = 部署配置 `git.timeoutMs`，默认 60 秒） |
+| `GET /ext/api/mcp/list` | MCP 服务器列表（面板管理的行 + 外部手写行，含配置摘要与加载器状态）与 `max`（部署上限） |
 | `POST /ext/api/mcp/add` | `{name, transport, command?, args?, env?, cwd?, url?, headers?, toolCallTimeoutMs?}` 添加 MCP 服务器（写入 patch 行并热生效） |
 | `POST /ext/api/mcp/remove` | `{name}` 移除 MCP 服务器（删除 patch 行并热生效） |
 | `POST /ext/api/mcp/set-enabled` | `{name, enabled}` 启用/停用（patch 行 disabled 标记） |
@@ -136,28 +174,41 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 - 插件安装 = 包落到 `~/.dsh/profiles/node_modules`（profile 解析链上的共享根）→ 把该包在 package.json 的 `dsh.bundle.patch` 中声明的补丁文件的行（若有）合并进 profile 的 `cordis.patch.yml`；没有 bundle 补丁的包自动补一条 `{id: <包名>, name: <包名>}` 行，保证它能被加载 → HMR 配置监听器事务性重放补丁，条目即时挂载
 - 所有 `cordis.patch.yml` 写入都是「解析 → 合并 → 临时文件 + rename 原子写」，保留文件头注释；`!!js` 表达式（loader 配置方言）往返无损；连续写入之间有间隔（串行化），避免监听器背靠背刷新
 - 包来源与补丁行记录在 profile 目录的 `.dsh-ext-center.json`（卸载 / 停用时据此精确移除对应行）
-- 技能/插件列表与加载器状态由 `GET /ext/api/state` 提供；客户端通过 `fetch` 调用
+- 技能/插件列表与加载器状态由 `GET /ext/api/state` 提供；`limits` 块携带各上限与客户端轮询间隔，浏览器界面文案与节奏随之跟随；客户端通过 `fetch` 调用
 - 本插件自身的偏好走原生 `ctx.settings` 命名空间（`ext-center`），浏览器侧用 `settingsScope` 读写
-- 通过 `tools/execute` waterfall（与 `dsh-tool-call-timeout-policy` 同机制）在参数校验前修复模型生成的工具参数；只修安全的 `description` 与可恢复的 JSON 字符串，绝不伪造 `code` / `command` 等内容字段
+- 部署可调项（树/终端/git/mcp/vision 上限、修复开关与占位文案、客户端轮询间隔）是 ext-center 行 `config:` 块中经 schemastery 校验的 Config 字段，加载即校验，非法值响亮失败；安全不变量保持常量
+- 注册即效应：settings 命名空间与技能 provider 的 `register()` 返回的 disposer 都挂进 `ctx.effect`，插件卸载时一并释放
+- 通过 `tools/execute` waterfall（与 `dsh-tool-call-timeout-policy` 同机制）在参数校验前修复模型生成的工具参数；只修安全的 `description` 与可恢复的 JSON 字符串，绝不伪造 `code` / `command` 等内容字段；`toolRepair.enabled` 可整体关闭、`descriptionFill` 可换占位文案
 - 文件树根目录解析：`treeRoot` 设置 → `ctx.workspaceRegistry` 最近注册的工作区 → 进程 `cwd`；因此未配置时默认展示最近使用的工作区
 
 ## 目录结构
 
 ```
 better-deepseek-harness/
-├── package.json          # dsh.bundle.patch + dsh.client(platform: web) 声明
+├── package.json          # 入口、dsh.bundle.patch + dsh.client 声明、scripts（build/test/typecheck）
 ├── cordis.patch.yml      # bundle 补丁：插入 ext-center 行
-├── install.ps1           # 一键安装脚本（方式一）
-├── lib/
-│   ├── index.js          # 主机侧：settings 命名空间、/ext/api 路由、技能/插件生命周期、文件树读写、工具参数修复
-│   ├── tool-args.js      # 模型工具参数修复纯函数（tools/execute 包装层使用）
-│   └── client.js         # 浏览器侧：设置页「更好的 DeepSeek Harness」区块（__ModuleLoader__ 工厂格式）
+├── install.ps1           # 一键安装脚本（方式一，跳过 .git 与 node_modules）
+├── tsconfig.json         # 类型检查（strict，noEmit）
+├── tsconfig.build.json   # 构建：tsc 发射 src/ → lib/
+├── src/                  # 源码
+│   ├── index.js          # 主机侧：settings 命名空间、/ext/api 路由、技能/插件生命周期、文件树读写、工具参数修复、图片转述、MCP
+│   ├── client.js         # 浏览器侧：设置页区块、终端/Git 页签、侧栏文件树（__ModuleLoader__ 工厂格式）
+│   └── tool-args.ts      # 模型工具参数修复纯函数（完整 TypeScript；构建后为 lib/tool-args.js）
+├── tests/                # vitest 规格（tests/tool-args.spec.ts、tests/host-wiring.spec.ts）
+├── docs/                 # docs/architecture.md（架构）、docs/development.md（开发指南）
+├── lib/                  # 构建产物（npm run build 生成并提交进 git —— 安装方无需任何构建工具）
 └── README.md
 ```
+
+## 开发
+
+- `npm install` 后运行 `npm run typecheck`（strict 类型检查）、`npm test`（vitest）、`npm run build`（tsc 发射 `src/` → `lib/`），详见 docs/development.md
+- `lib/` 是提交进 git 的构建产物：改完 `src/` 后必须 `npm run build` 并提交新的 `lib/`，否则安装方拿不到改动（安装流程不执行构建）
 
 ## 故障排查
 
 - **改动未热生效**：`cordis.patch.yml` 的变更由 harness 的配置监听器（HMR）应用。若短时间内连续多次修改（例如安装后立刻停用）触发监听器竞态，配置监听可能卡住——重启一次 `dsh web` 即可恢复（补丁文件本身是正确的，重启后照常加载）。本插件的写入已做间隔串行化以尽量避免该情况。
 - **看不到设置页区块**：浏览器刷新页面（客户端 bundle 由 boot manifest 注入，刷新后加载）。
 - **安装报 git-unavailable**：本机未安装 git，改用目录 / tarball URL / npm 包名来源。
+- **启动报 `[better-deepseek-harness] invalid config on the ext-center row ...`**：cordis.patch.yml 里 `ext-center` 行的 `config:` 有非法值（超出范围或类型错误）。按「部署配置」一节修正或直接删掉该 `config:` 块（全部回落默认值）后重启。
 - **偶发 `invalid arguments: missing required property ...`**：模型生成的工具参数偶发缺字段或 JSON 损坏。本插件的 `tools/execute` 包装层会自动修复 `description` 缺失与可恢复的 JSON；确实缺少 `code` / `command` 等内容的调用仍会按 DSH 原机制报错并让模型重试，属正常反馈。
