@@ -1728,7 +1728,14 @@ async function transcribeRequest(llm, options, vision, cfg) {
  */
 function registerVisionListener(ctx, configOf, cfg) {
   try {
-    ctx.on("llm/stream", async (options, next) => {
+    // The waterfall contract: every llm/stream listener returns the next
+    // listener's value, and the outermost return value must be an async
+    // iterable — dsh-agent-loop consumes it with for-await and sibling
+    // middleware with yield* next(). An async callback that returns
+    // llm.stream(...) yields a Promise and breaks every session
+    // ("yield* ... is not async iterable"), so the transcribed path is an
+    // async generator and the pass-through path forwards next() untouched.
+    ctx.on("llm/stream", (options, next) => {
       let vision;
       try {
         vision = visionConfigOf(configOf(), cfg);
@@ -1739,8 +1746,10 @@ function registerVisionListener(ctx, configOf, cfg) {
         llm = ctx.get("llm");
       } catch { /* the llm service is optional in this deployment */ }
       if (!llm || typeof llm.stream !== "function") return next();
-      const rewritten = await transcribeRequest(llm, options, vision, cfg);
-      return llm.stream(rewritten);
+      return (async function* () {
+        const rewritten = await transcribeRequest(llm, options, vision, cfg);
+        yield* llm.stream(rewritten);
+      })();
     }, { global: true });
   } catch (error) {
     ctx.logger?.warn?.("better-deepseek-harness: llm/stream wrapper registration failed: %s", error?.message ?? error);
@@ -1813,18 +1822,16 @@ function apply(ctx, config = {}) {
   //     configured vision model before a text-only adapter ever sees them.
   registerVisionListener(ctx, configOf, cfg);
 
-  // 1. settings namespace (native preferences); the registry's register()
-  //    disposer is released with the plugin (registrations are effects).
+  // 1. settings namespace (native preferences). The registration rides a
+  //    scoped fiber that waits for the settings service (the same pattern as
+  //    dsh-settings' installSettingsSection): ctx.get("settings") at
+  //    apply() time returns undefined while the provider is still starting,
+  //    and a one-shot read would silently lose the namespace forever — the
+  //    settings tab would stay "loading" with no config fields at all.
   try {
-    ctx.effect(() => {
-      const settings = ctx.get("settings");
-      if (!settings || typeof settings.register !== "function") {
-        ctx.logger?.warn?.("better-deepseek-harness: settings service is not mounted — the ext-center namespace stays unregistered");
-        return;
-      }
-      const dispose = settings.register(SETTINGS_NS, SettingsSchema, { base: DEFAULTS });
-      return () => { if (typeof dispose === "function") dispose(); };
-    }, "better-deepseek-harness: settings namespace");
+    ctx.inject(["settings"], (sctx) => {
+      sctx.settings.register(SETTINGS_NS, SettingsSchema, { base: DEFAULTS });
+    });
   } catch (error) {
     ctx.logger?.warn?.("better-deepseek-harness: settings namespace registration failed: %s", error?.message ?? error);
   }

@@ -24,11 +24,11 @@
 
 | 目标 | 接缝 | 用途 |
 | --- | --- | --- |
-| 插件自身偏好 | `ctx.settings.register(SETTINGS_NS, SettingsSchema, { base: DEFAULTS })` | `ext-center` 设置命名空间，写入 settings.yaml |
+| 插件自身偏好 | `ctx.inject(["settings"], ...)` 内 `settings.register(SETTINGS_NS, SettingsSchema, { base: DEFAULTS })` | `ext-center` 设置命名空间，写入 settings.yaml；注入纤维等待 settings 服务就绪，插件先于 settings 启动也能注册成功 |
 | HTTP API | `ctx.webServer.register({ kind: "prefix", path: "/ext/api", handler })` | 全部 /ext/api 端点 |
 | 自定义技能目录 | `skills.registerProvider(...)` | 把 `customSkillDirs` 中的技能提供给所有会话 |
 | 拦截工具调用 | `ctx.on("tools/execute", ...)` 瀑布 | 参数校验前修复 description 缺失与损坏 JSON（与 `dsh-tool-call-timeout-policy` 同机制） |
-| 拦截模型请求 | `ctx.on("llm/stream", ...)` 瀑布 | 含图片的请求先由视觉模型转述成文字 |
+| 拦截模型请求 | `ctx.on("llm/stream", ...)` 瀑布 | 含图片的请求先由视觉模型转述成文字；监听器返回异步可迭代对象（async generator），与瀑布“最外层返回值必须是 async iterable”的约定一致 |
 | 工作区解析 | `ctx.workspaceRegistry` | 文件树根目录（未配置时的默认来源） |
 
 ### 路由表设计

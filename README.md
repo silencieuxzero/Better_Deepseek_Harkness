@@ -160,7 +160,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | `POST /ext/api/mcp/add` | `{name, transport, command?, args?, env?, cwd?, url?, headers?, toolCallTimeoutMs?}` 添加 MCP 服务器（写入 patch 行并热生效） |
 | `POST /ext/api/mcp/remove` | `{name}` 移除 MCP 服务器（删除 patch 行并热生效） |
 | `POST /ext/api/mcp/set-enabled` | `{name, enabled}` 启用/停用（patch 行 disabled 标记） |
-| `POST /ext/api/config` | 写 `ext-center` 设置命名空间（`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot`） |
+| `POST /ext/api/config` | 写 `ext-center` 设置命名空间（`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot` / `vision`） |
 | `POST /ext/api/skill/install` | `{name, text?\|url?\|path?}` 安装技能 |
 | `POST /ext/api/skill/uninstall` | `{name}` 卸载技能 |
 | `POST /ext/api/plugin/install` | `{source:{kind:'npm'\|'url'\|'folder'\|'git', spec?\|url?\|path?}}` 安装插件 |
@@ -177,7 +177,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 - 技能/插件列表与加载器状态由 `GET /ext/api/state` 提供；`limits` 块携带各上限与客户端轮询间隔，浏览器界面文案与节奏随之跟随；客户端通过 `fetch` 调用
 - 本插件自身的偏好走原生 `ctx.settings` 命名空间（`ext-center`），浏览器侧用 `settingsScope` 读写
 - 部署可调项（树/终端/git/mcp/vision 上限、修复开关与占位文案、客户端轮询间隔）是 ext-center 行 `config:` 块中经 schemastery 校验的 Config 字段，加载即校验，非法值响亮失败；安全不变量保持常量
-- 注册即效应：settings 命名空间与技能 provider 的 `register()` 返回的 disposer 都挂进 `ctx.effect`，插件卸载时一并释放
+- 注册即效应：settings 命名空间经 `ctx.inject(["settings"], ...)` 等待服务就绪后注册（与 dsh-settings 的 `installSettingsSection` 同模式，插件先于 settings 启动也不丢命名空间）；技能 provider 的 `register()` 返回的 disposer 挂进 `ctx.effect`，插件卸载时一并释放
 - 通过 `tools/execute` waterfall（与 `dsh-tool-call-timeout-policy` 同机制）在参数校验前修复模型生成的工具参数；只修安全的 `description` 与可恢复的 JSON 字符串，绝不伪造 `code` / `command` 等内容字段；`toolRepair.enabled` 可整体关闭、`descriptionFill` 可换占位文案
 - 文件树根目录解析：`treeRoot` 设置 → `ctx.workspaceRegistry` 最近注册的工作区 → 进程 `cwd`；因此未配置时默认展示最近使用的工作区
 
@@ -209,6 +209,7 @@ better-deepseek-harness/
 
 - **改动未热生效**：`cordis.patch.yml` 的变更由 harness 的配置监听器（HMR）应用。若短时间内连续多次修改（例如安装后立刻停用）触发监听器竞态，配置监听可能卡住——重启一次 `dsh web` 即可恢复（补丁文件本身是正确的，重启后照常加载）。本插件的写入已做间隔串行化以尽量避免该情况。
 - **看不到设置页区块**：浏览器刷新页面（客户端 bundle 由 boot manifest 注入，刷新后加载）。
+- **设置页一直「加载中…」/ 图片转述没有配置项**：`ext-center` 设置命名空间没有注册——旧版本在 `settings` 服务就绪前用一次性 `ctx.get("settings")` 读取，插件先于设置服务启动时命名空间会永久丢失。升级到含「命名空间随 `ctx.inject(["settings"], ...)` 等待注册」的版本后重启 `dsh web` 并刷新页面。
 - **安装报 git-unavailable**：本机未安装 git，改用目录 / tarball URL / npm 包名来源。
 - **启动报 `[better-deepseek-harness] invalid config on the ext-center row ...`**：cordis.patch.yml 里 `ext-center` 行的 `config:` 有非法值（超出范围或类型错误）。按「部署配置」一节修正或直接删掉该 `config:` 块（全部回落默认值）后重启。
 - **偶发 `invalid arguments: missing required property ...`**：模型生成的工具参数偶发缺字段或 JSON 损坏。本插件的 `tools/execute` 包装层会自动修复 `description` 缺失与可恢复的 JSON；确实缺少 `code` / `command` 等内容的调用仍会按 DSH 原机制报错并让模型重试，属正常反馈。
