@@ -1,5 +1,7 @@
 # better-deepseek-harness（更好的 DeepSeek Harness）
 
+项目名致敬Minecraft模组名（？），更好的下界/末地/进度/砧板/FPS/地牢/村庄/经验修补/F3/树叶/动物动作/PVP/HUD……
+
 为 DeepSeek Harness Web UI 编写的插件：在「设置 → 更好的 DeepSeek Harness」中直接安装、卸载、启用/停用 **技能（Skills）** 与 **插件（Plugins）**，并把插件的自身偏好接入原生设置体系（settings.yaml 的 `ext-center` 节）。
 
 ## 功能
@@ -114,7 +116,8 @@ better-deepseek-harness/
 ├── cordis.patch.yml      # bundle 补丁：插入 ext-center 行
 ├── install.ps1           # 一键安装脚本（方式一）
 ├── lib/
-│   ├── index.js          # 主机侧：settings 命名空间、/ext/api 路由、技能/插件生命周期
+│   ├── index.js          # 主机侧：settings 命名空间、/ext/api 路由、技能/插件生命周期、文件树读写、工具参数修复
+│   ├── tool-args.js      # 模型工具参数修复纯函数（tools/execute 包装层使用）
 │   └── client.js         # 浏览器侧：设置页「更好的 DeepSeek Harness」区块（__ModuleLoader__ 工厂格式）
 └── README.md
 ```

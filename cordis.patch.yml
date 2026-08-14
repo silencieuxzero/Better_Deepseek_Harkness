@@ -7,4 +7,4 @@
 # one row id, so a deployment that used both flows still composes once.
 - insert:
     - id: ext-center
-      name: dsh-extension-center
+      name: better-deepseek-harness

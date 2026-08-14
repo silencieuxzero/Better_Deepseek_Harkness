@@ -39,4 +39,4 @@ if ($content -notmatch "- id: ext-center") {
 }
 
 Write-Host "better-deepseek-harness installed into profile '$Profile'."
-Write-Host "The config watcher activates it live; refresh the Web UI to see the "更好的 DeepSeek Harness" settings section."
+Write-Host 'The config watcher activates it live; refresh the Web UI to see the "更好的 DeepSeek Harness" settings section.'
