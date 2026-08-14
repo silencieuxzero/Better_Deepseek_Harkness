@@ -19,7 +19,7 @@
   - `skillRoot`：技能安装根目录（留空 = `~/.dsh/skills`）
   - `customSkillDirs`：额外技能目录，每行一个；其中的技能会通过本插件注册的 provider 提供给所有会话
   - `treeRoot`：侧栏文件树根目录（留空 = 最近注册的工作区，其次进程工作目录）
-- **侧栏文件树**：在侧栏底部提供工作区文件浏览（`GET /ext/api/tree`），逐级展开目录，目录显示子项数、文件显示大小，每行可一键复制路径；支持全部收起与根目录配置（设置项 `treeRoot`；留空时默认最近注册的工作区，其次进程工作目录）；点击面板外部或按 Esc 自动收起
+- **侧栏文件树**：在侧栏底部提供工作区文件浏览（`GET /ext/api/tree`），逐级展开目录，目录显示子项数、文件显示大小，每行可一键复制路径；支持全部收起与根目录配置（设置项 `treeRoot`；留空时默认最近注册的工作区，其次进程工作目录）；点击面板外部或按 Esc 自动收起；点击文件在弹窗编辑器中打开，可保存（仅限树根内既有文件，1 MiB 上限，二进制/NUL 防护）
 - **工具参数自动修复**：通过 `tools/execute` 包装层修复模型偶发的参数抖动——`description` 缺失 / 为空 / 类型错误时自动补上中性占位符；`arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象，避免无谓的 `INVALID_ARGS` 报错
 
 ## 安装
@@ -85,6 +85,8 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | --- | --- |
 | `GET /ext/api/state` | 全量状态：技能列表、插件安装记录、加载器条目、配置 |
 | `GET /ext/api/tree?path=...` | 文件树：列出根目录下的一级条目（含 type / size / mtime / children 计数与 truncated 截断标记）；根目录解析：`treeRoot` 设置 → 最近注册的工作区 → 进程工作目录；相对路径可选 |
+| `GET /ext/api/tree/content?path=...` | 读取树根内一个文本文件（拒绝目录 / 超大 / 含 NUL 的二进制），供编辑器打开 |
+| `POST /ext/api/tree/write` | `{path, content}` 原子写回树根内既有文件（临时文件 + rename；同样有大小与二进制防护） |
 | `POST /ext/api/config` | 写 `ext-center` 设置命名空间（`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot`） |
 | `POST /ext/api/skill/install` | `{name, text?\|url?\|path?}` 安装技能 |
 | `POST /ext/api/skill/uninstall` | `{name}` 卸载技能 |
