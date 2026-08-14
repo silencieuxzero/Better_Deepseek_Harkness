@@ -1,6 +1,6 @@
 {
   "name": "better-deepseek-harness",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Better DeepSeek Harness — install and manage skills and plugins from the Web UI settings page.",
   "type": "module",
   "main": "lib/index.js",
