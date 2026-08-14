@@ -721,32 +721,31 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region lib/types/client/SettingsTab.js
-		/** The Settings tab: the ext-center settings namespace through the native scope. */
+		/** The Settings tab: ext-center settings through the plugin's own /ext/api endpoints. */
 		function SettingsTab(props) {
 			var t = props.t;
-			var scope = props.scope;
-			var snapshot = useSyncExternalStore(
-				function (listener) { return scope.subscribe(listener); },
-				function () { return scope.getSnapshot(); }
-			);
-			var ready = snapshot.status === "ready" && snapshot.value !== void 0;
-			var _a = useState(null), draft = _a[0], setDraft = _a[1];
-			var _b = useState(null), error = _b[0], setError = _b[1];
-			var _c = useState(null), message = _c[0], setMessage = _c[1];
-			var _d = useState(false), busy = _d[0], setBusy = _d[1];
-			var _e = useState([]), providers = _e[0], setProviders = _e[1];
-			var _f = useState(DEFAULT_LIMITS), limits = _f[0], setLimits = _f[1];
-			useEffect(function () {
-				var loader = props.loadState;
-				if (typeof loader !== "function") return;
-				loader().then(function (value) {
+			var loadState = props.loadState;
+			var _a = useState(null), state = _a[0], setState = _a[1];
+			var _b = useState(null), draft = _b[0], setDraft = _b[1];
+			var _c = useState(null), error = _c[0], setError = _c[1];
+			var _d = useState(null), message = _d[0], setMessage = _d[1];
+			var _e = useState(false), busy = _e[0], setBusy = _e[1];
+			var _f = useState([]), providers = _f[0], setProviders = _f[1];
+			var _g = useState(DEFAULT_LIMITS), limits = _g[0], setLimits = _g[1];
+			var ready = state !== null && state.config !== void 0;
+			var writable = !state || state.settingsWritable !== false;
+			var load = useCallback(function () {
+				if (typeof loadState !== "function") return;
+				loadState().then(function (value) {
+					setState(value);
 					setProviders(Array.isArray(value.llmProviders) ? value.llmProviders : []);
 					setLimits(pickLimits(value.limits));
 				}, function () { /* non-fatal */ });
-			}, [props.loadState]);
+			}, [loadState]);
+			useEffect(function () { load(); }, [load]);
 			useEffect(function () {
 				if (!ready || draft !== null) return;
-				var value = snapshot.value || {};
+				var value = state.config || {};
 				var vision = value.vision && typeof value.vision === "object" ? value.vision : {};
 				setDraft({
 					allowLan: !!value.allowLan,
@@ -759,19 +758,19 @@ window.__ModuleLoader__.load({
 					visionPrompt: typeof vision.prompt === "string" ? vision.prompt : "",
 					visionMaxImages: Number(vision.maxImages) > 0 ? String(Math.round(Number(vision.maxImages))) : ""
 				});
-			}, [ready, draft, snapshot]);
+			}, [ready, draft, state]);
 			var save = useCallback(function () {
 				if (!ready || draft === null) return;
 				setBusy(true);
 				setError(null);
 				setMessage(null);
-				var value = snapshot.value || {};
-				var ops = [];
+				var value = state.config || {};
+				var patch = {};
 				var custom = draft.customSkillDirs.split("\n").map(function (line) { return line.trim(); }).filter(function (line) { return line.length > 0; });
-				if (!!draft.allowLan !== !!value.allowLan) ops.push(["allowLan", draft.allowLan]);
-				if (draft.skillRoot !== (value.skillRoot || "")) ops.push(["skillRoot", draft.skillRoot.trim()]);
-				if (draft.treeRoot !== (value.treeRoot || "")) ops.push(["treeRoot", draft.treeRoot.trim()]);
-				if (custom.join("\u0000") !== (Array.isArray(value.customSkillDirs) ? value.customSkillDirs.join("\u0000") : "")) ops.push(["customSkillDirs", custom]);
+				if (!!draft.allowLan !== !!value.allowLan) patch.allowLan = draft.allowLan;
+				if (draft.skillRoot !== (value.skillRoot || "")) patch.skillRoot = draft.skillRoot.trim();
+				if (draft.treeRoot !== (value.treeRoot || "")) patch.treeRoot = draft.treeRoot.trim();
+				if (custom.join("\u0000") !== (Array.isArray(value.customSkillDirs) ? value.customSkillDirs.join("\u0000") : "")) patch.customSkillDirs = custom;
 				var visionValue = value.vision && typeof value.vision === "object" ? value.vision : {};
 				var visionDraft = {
 					enabled: !!draft.visionEnabled,
@@ -781,32 +780,34 @@ window.__ModuleLoader__.load({
 					maxImages: draft.visionMaxImages.trim() === "" ? 4 : Math.min(Math.max(parseInt(draft.visionMaxImages, 10) || 4, 1), limits.visionMaxImagesCap)
 				};
 				if (visionDraft.enabled !== (visionValue.enabled === true) || visionDraft.provider !== (visionValue.provider || "") || visionDraft.model !== (visionValue.model || "") || visionDraft.prompt !== (visionValue.prompt || "") || visionDraft.maxImages !== (Number(visionValue.maxImages) || 4)) {
-					ops.push(["vision", visionDraft]);
+					patch.vision = visionDraft;
 				}
-				if (ops.length === 0) {
+				if (Object.keys(patch).length === 0) {
 					setMessage(t("noop"));
 					setBusy(false);
 					return;
 				}
-				var chain = Promise.resolve();
-				ops.forEach(function (op) {
-					chain = chain.then(function () { return scope.set(op[0], op[1]); });
-				});
-				chain.then(function () {
+				callApi("/ext/api/config", patch).then(function (next) {
+					setState(next);
+					setDraft(null);
 					setMessage(t("saved"));
 				}, function (reason) {
 					setError(String(reason && reason.message ? reason.message : reason));
 				}).then(function () { setBusy(false); });
-			}, [ready, draft, snapshot, scope, t]);
+			}, [ready, draft, state, limits.visionMaxImagesCap, t]);
 			var reset = useCallback(function (field) {
 				if (!ready) return;
-				scope.unset(field).then(function () {
+				setBusy(true);
+				setError(null);
+				setMessage(null);
+				callApi("/ext/api/config", { reset: [field] }).then(function (next) {
+					setState(next);
+					setDraft(null);
 					setMessage(t("saved"));
 				}, function (reason) {
 					setError(String(reason && reason.message ? reason.message : reason));
-				});
-			}, [ready, scope, t]);
-			var writable = snapshot.writable !== false;
+				}).then(function () { setBusy(false); });
+			}, [ready, t]);
 			var visionOptions = providers.map(function (p) { return { value: p.id, label: (p.name && p.name !== p.id ? p.name + " · " : "") + p.id }; });
 			visionOptions.unshift({ value: "", label: "—" });
 			if (draft !== null && draft.visionProvider !== "" && !visionOptions.some(function (o) { return o.value === draft.visionProvider; })) {
@@ -1837,7 +1838,7 @@ window.__ModuleLoader__.load({
 		/** Dictionary namespace owned by this plugin. */
 		var NS = "ext-center";
 		/** Required services (cordis fiber inject). */
-		var inject = ["slots", "locale", "settingsScope"];
+		var inject = ["slots", "locale"];
 		/** The section entry: a settings.section list item with three tabs. */
 		function ExtensionCenterSection(props) {
 			var t = props.t;
@@ -1869,7 +1870,7 @@ window.__ModuleLoader__.load({
 				tab === "skills" ? jsx(SkillsTab, { t: t, loadState: props.loadState }) : null,
 				tab === "plugins" ? jsx(PluginsTab, { t: t, loadState: props.loadState }) : null,
 				tab === "mcp" ? jsx(McpTab, { t: t }) : null,
-				tab === "settings" ? jsx(SettingsTab, { t: t, scope: props.scope, loadState: props.loadState }) : null
+				tab === "settings" ? jsx(SettingsTab, { t: t, loadState: props.loadState }) : null
 			] });
 		}
 		/** Mount the Better DeepSeek Harness settings section. */
@@ -1878,7 +1879,6 @@ window.__ModuleLoader__.load({
 			ctx.effect(function () {
 				return ctx.locale.register(NS, { zh: zh, en: en });
 			}, "ext-center: dictionaries");
-			var scope = ctx.settingsScope.bind({ namespace: NS });
 			var loadState = function () {
 				return callApi("/ext/api/state");
 			};
@@ -1889,7 +1889,7 @@ window.__ModuleLoader__.load({
 					order: 20,
 					label: function () { return t("nav"); },
 					locale: NS,
-					inject: function () { return { loadState: loadState, scope: scope }; },
+					inject: function () { return { loadState: loadState }; },
 					children: {}
 				}, ExtensionCenterSection);
 			});

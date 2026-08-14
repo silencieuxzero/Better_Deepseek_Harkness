@@ -175,7 +175,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 - 所有 `cordis.patch.yml` 写入都是「解析 → 合并 → 临时文件 + rename 原子写」，保留文件头注释；`!!js` 表达式（loader 配置方言）往返无损；连续写入之间有间隔（串行化），避免监听器背靠背刷新
 - 包来源与补丁行记录在 profile 目录的 `.dsh-ext-center.json`（卸载 / 停用时据此精确移除对应行）
 - 技能/插件列表与加载器状态由 `GET /ext/api/state` 提供；`limits` 块携带各上限与客户端轮询间隔，浏览器界面文案与节奏随之跟随；客户端通过 `fetch` 调用
-- 本插件自身的偏好走原生 `ctx.settings` 命名空间（`ext-center`），浏览器侧用 `settingsScope` 读写
+- 本插件自身的偏好落盘在原生 `ctx.settings` 命名空间（`ext-center`）；该命名空间不在 api-proxy 的浏览器白名单里，因此设置页通过本插件自己的 `/ext/api/state` 与 `/ext/api/config` 读写（后者在宿主侧用 settings service 落盘）
 - 部署可调项（树/终端/git/mcp/vision 上限、修复开关与占位文案、客户端轮询间隔）是 ext-center 行 `config:` 块中经 schemastery 校验的 Config 字段，加载即校验，非法值响亮失败；安全不变量保持常量
 - 注册即效应：settings 命名空间经 `ctx.inject(["settings"], ...)` 等待服务就绪后注册（与 dsh-settings 的 `installSettingsSection` 同模式，插件先于 settings 启动也不丢命名空间）；技能 provider 的 `register()` 返回的 disposer 挂进 `ctx.effect`，插件卸载时一并释放
 - 通过 `tools/execute` waterfall（与 `dsh-tool-call-timeout-policy` 同机制）在参数校验前修复模型生成的工具参数；只修安全的 `description` 与可恢复的 JSON 字符串，绝不伪造 `code` / `command` 等内容字段；`toolRepair.enabled` 可整体关闭、`descriptionFill` 可换占位文案
@@ -209,7 +209,7 @@ better-deepseek-harness/
 
 - **改动未热生效**：`cordis.patch.yml` 的变更由 harness 的配置监听器（HMR）应用。若短时间内连续多次修改（例如安装后立刻停用）触发监听器竞态，配置监听可能卡住——重启一次 `dsh web` 即可恢复（补丁文件本身是正确的，重启后照常加载）。本插件的写入已做间隔串行化以尽量避免该情况。
 - **看不到设置页区块**：浏览器刷新页面（客户端 bundle 由 boot manifest 注入，刷新后加载）。
-- **设置页一直「加载中…」/ 图片转述没有配置项**：`ext-center` 设置命名空间没有注册——旧版本在 `settings` 服务就绪前用一次性 `ctx.get("settings")` 读取，插件先于设置服务启动时命名空间会永久丢失。升级到含「命名空间随 `ctx.inject(["settings"], ...)` 等待注册」的版本后重启 `dsh web` 并刷新页面。
+- **设置页一直「加载中…」/ 图片转述没有配置项**：设置页改走本插件自己的 `/ext/api/state` 与 `/ext/api/config`，不再依赖 api-proxy 是否暴露 `ext-center`。旧版本若仍在加载中，升级后重启 `dsh web` 并刷新页面；若只有旧版可用，检查宿主日志确认 `ext-center` 设置命名空间已注册。
 - **安装报 git-unavailable**：本机未安装 git，改用目录 / tarball URL / npm 包名来源。
 - **启动报 `[better-deepseek-harness] invalid config on the ext-center row ...`**：cordis.patch.yml 里 `ext-center` 行的 `config:` 有非法值（超出范围或类型错误）。按「部署配置」一节修正或直接删掉该 `config:` 块（全部回落默认值）后重启。
 - **偶发 `invalid arguments: missing required property ...`**：模型生成的工具参数偶发缺字段或 JSON 损坏。本插件的 `tools/execute` 包装层会自动修复 `description` 缺失与可恢复的 JSON；确实缺少 `code` / `command` 等内容的调用仍会按 DSH 原机制报错并让模型重试，属正常反馈。

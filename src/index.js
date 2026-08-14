@@ -2131,6 +2131,13 @@ function snapshotState(cx) {
     patchFile: layout.patchFile,
     skillRoots: skillRootsOf(layout, config).map((r) => ({ path: r.path, source: r.source })),
     config,
+    settingsWritable: (() => {
+      let settings;
+      try {
+        settings = ctx.get("settings");
+      } catch { /* the settings service is optional in this deployment */ }
+      return settings ? settings.writable !== false : false;
+    })(),
     limits: {
       treeMaxEntries: cfg.tree.maxEntries,
       treeMaxFileSize: MAX_TREE_FILE_SIZE,
@@ -2288,7 +2295,9 @@ const routes = {
     handler: async (body, cx) => {
       const { ctx } = cx;
       const settings = ctx.get("settings");
-      if (!settings || typeof settings.update !== "function") throw err("settings-unavailable", "the settings service is not mounted");
+      if (!settings || (typeof settings.mutate !== "function" && typeof settings.update !== "function")) {
+        throw err("settings-unavailable", "the settings service is not mounted");
+      }
       const patch = {};
       for (const key of ["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision"]) {
         if (key in body) {
@@ -2301,7 +2310,29 @@ const routes = {
           patch[key] = value;
         }
       }
-      await settings.update(SETTINGS_NS, patch);
+      const resets = [];
+      if (body.reset !== void 0) {
+        if (!Array.isArray(body.reset) || body.reset.some((v) => typeof v !== "string")) {
+          throw err("bad-request", "reset must be an array of strings");
+        }
+        for (const key of body.reset) {
+          if (!["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision"].includes(key)) {
+            throw err("bad-request", `unknown settings key \"${key}\"`);
+          }
+          resets.push(key);
+        }
+      }
+      const ops = [];
+      for (const [key, value] of Object.entries(patch)) ops.push({ op: "set", path: [key], value });
+      for (const key of resets) ops.push({ op: "unset", path: [key] });
+      if (ops.length > 0) {
+        if (typeof settings.mutate === "function") {
+          await settings.mutate(SETTINGS_NS, ops);
+        } else {
+          if (resets.length > 0) throw err("settings-unavailable", "this settings provider cannot clear fields");
+          await settings.update(SETTINGS_NS, patch);
+        }
+      }
       const skills = ctx.get("skills");
       if (skills && typeof skills.invalidateCache === "function") skills.invalidateCache();
       return snapshotState(cx);

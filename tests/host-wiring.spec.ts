@@ -25,7 +25,10 @@ function mockCtx(options: MockOptions = {}) {
   } = { routes: [], events: [] };
   const settings = {
     register: vi.fn(() => () => {}),
-    get: vi.fn(() => options.stored ?? {})
+    get: vi.fn(() => options.stored ?? {}),
+    update: vi.fn(async () => {}),
+    mutate: vi.fn(async () => {}),
+    writable: true
   };
   const skills = { registerProvider: vi.fn(() => () => {}) };
   const pendingInject: Array<(child: unknown) => void> = [];
@@ -74,6 +77,17 @@ function fakeRes() {
 
 function fakeReq(method: string, url: string, remoteAddress: string) {
   return { method, url, socket: { remoteAddress } };
+}
+
+function fakeReqWithBody(method: string, url: string, payload: unknown) {
+  const req = fakeReq(method, url, "127.0.0.1") as ReturnType<typeof fakeReq> & {
+    on: (event: string, cb: (chunk?: Buffer) => void) => void;
+  };
+  req.on = (event, cb) => {
+    if (event === "data") cb(Buffer.from(JSON.stringify(payload)));
+    if (event === "end") cb();
+  };
+  return req;
 }
 
 describe("apply() wiring", () => {
@@ -265,5 +279,37 @@ describe("route dispatcher", () => {
     const body = JSON.parse(res.end.mock.calls[0][0]);
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe("bad-request");
+  });
+});
+
+describe("config route", () => {
+  async function mountedConfigHandler() {
+    const { ctx, settings } = mockCtx();
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    return {
+      settings,
+      handler: register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>
+    };
+  }
+
+  it("writes settings patches through the plugin settings service", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    const vision = { enabled: true, provider: "vp", model: "vm", prompt: "", maxImages: 4 };
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { vision }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{ op: "set", path: ["vision"], value: vision }]);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(true);
+    expect(body.value.settingsWritable).toBe(true);
+  });
+
+  it("clears settings fields through path unset ops", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { reset: ["vision"] }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{ op: "unset", path: ["vision"] }]);
   });
 });
