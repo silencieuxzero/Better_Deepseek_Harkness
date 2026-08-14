@@ -1,0 +1,10 @@
+# better-deepseek-harness bundle patch.
+#
+# This layer is consumed by the official `dsh plugin --profile <name> add`
+# flow (a package declaring `dsh.bundle` becomes a profile layer). The
+# runtime installer keeps the same row in the profile's own cordis.patch.yml
+# so the extension activates live without a restart; both routes converge on
+# one row id, so a deployment that used both flows still composes once.
+- insert:
+    - id: ext-center
+      name: dsh-extension-center
