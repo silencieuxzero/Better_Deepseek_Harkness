@@ -30,6 +30,7 @@
   - 差异视图：点击文件查看统一 diff（行号 + 增删/上下文/块头着色）；未跟踪文件以全新增形式展示；二进制文件与超大差异有提示；合并冲突以合并 diff 原样展示
   - 提交历史：最近 30 条（短哈希 / 作者 / 时间 / 主题）
   - 状态每 5 秒自动刷新；仓库自动从文件树根向上查找 .git；所有操作由主机侧 git 子进程执行（GIT_TERMINAL_PROMPT=0，防挂起）
+- **MCP 服务器**：设置页新增「MCP」页签——添加自定义 MCP 服务器（stdio 本地命令 / streamable-http 远程 URL，支持参数、环境变量、工作目录、请求头、调用超时）；每个服务器写为 cordis.patch.yml 中的一行 `@deepseek-ai/dsh-mcp-client` 条目（id `ext-center.mcp.<名称>`），由配置监听器**热生效**；列表实时显示加载器状态（运行中/失败/已停用）并支持启用/停用/移除；服务器工具以 `mcp__<名称>__<工具名>` 提供给模型；手写的外部 MCP 行只读展示
 - **工具参数自动修复**：通过 `tools/execute` 包装层修复模型偶发的参数抖动——`description` 缺失 / 为空 / 类型错误时自动补上中性占位符；`arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象，避免无谓的 `INVALID_ARGS` 报错
 
 ## 安装
@@ -116,6 +117,10 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | `POST /ext/api/git/checkout` | `{branch}` 切换分支（名称白名单校验） |
 | `POST /ext/api/git/pull` | 拉取（--ff-only，60 秒超时） |
 | `POST /ext/api/git/push` | 推送（60 秒超时） |
+| `GET /ext/api/mcp/list` | MCP 服务器列表（面板管理的行 + 外部手写行，含配置摘要与加载器状态） |
+| `POST /ext/api/mcp/add` | `{name, transport, command?, args?, env?, cwd?, url?, headers?, toolCallTimeoutMs?}` 添加 MCP 服务器（写入 patch 行并热生效） |
+| `POST /ext/api/mcp/remove` | `{name}` 移除 MCP 服务器（删除 patch 行并热生效） |
+| `POST /ext/api/mcp/set-enabled` | `{name, enabled}` 启用/停用（patch 行 disabled 标记） |
 | `POST /ext/api/config` | 写 `ext-center` 设置命名空间（`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot`） |
 | `POST /ext/api/skill/install` | `{name, text?\|url?\|path?}` 安装技能 |
 | `POST /ext/api/skill/uninstall` | `{name}` 卸载技能 |
