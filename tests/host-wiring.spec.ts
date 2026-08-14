@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { apply, inject, NAME, SETTINGS_NS } from "../src/index.js";
@@ -255,5 +255,15 @@ describe("route dispatcher", () => {
     const res = fakeRes();
     await handler(fakeReq("POST", "/ext/api/state", "127.0.0.1"), res);
     expect(res.writeHead).toHaveBeenCalledWith(405, expect.anything());
+  });
+
+  it("rejects a malformed percent-encoded path with 400", async () => {
+    const handler = await mountedHandler();
+    const res = fakeRes();
+    await handler(fakeReq("GET", "/ext/api/%E0%A4%A", "127.0.0.1"), res);
+    expect(res.writeHead).toHaveBeenCalledWith(400, expect.anything());
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
   });
 });
