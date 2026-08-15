@@ -29,6 +29,10 @@ interface MockOptions {
   sessions?: { get: (id: string) => unknown } | undefined;
   /** when true, ctx.inject stores the callback instead of running it now. */
   deferInject?: boolean;
+  /** when true, ctx.get("settings") throws like a missing cordis service. */
+  noSettings?: boolean;
+  /** when true, ctx.get("skills") throws like a missing cordis service. */
+  noSkills?: boolean;
 }
 
 function mockCtx(options: MockOptions = {}) {
@@ -49,6 +53,10 @@ function mockCtx(options: MockOptions = {}) {
   const ctx = {
     baseUrl: pathToFileURL(join(process.cwd(), "lib", "index.js")).href,
     get: vi.fn((name: string) => {
+      // cordis throws when the requested service is not mounted; the plugin
+      // must treat every optional service lookup as best-effort.
+      if (name === "settings" && options.noSettings) throw new Error("service settings is not mounted");
+      if (name === "skills" && options.noSkills) throw new Error("service skills is not mounted");
       if (name === "settings") return settings;
       if (name === "skills") return skills;
       if (name === "llm") return options.llm;
@@ -501,5 +509,31 @@ describe("config route", () => {
     await handler(fakeReqWithBody("POST", "/ext/api/config", { reset: ["vision"] }), res);
     expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
     expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{ op: "unset", path: ["vision"] }]);
+  });
+
+  it("reports settings-unavailable (not internal) when the settings service is not mounted", async () => {
+    const { ctx } = mockCtx({ noSettings: true });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { allowLan: true }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("settings-unavailable");
+  });
+
+  it("still succeeds when the skills service is missing after a settings write", async () => {
+    // A successful write must not turn into an error response just because
+    // the follow-up cache invalidation cannot reach an optional service.
+    const { settings, ctx } = mockCtx({ noSkills: true });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { allowLan: true }), res);
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{ op: "set", path: ["allowLan"], value: true }]);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(true);
   });
 });

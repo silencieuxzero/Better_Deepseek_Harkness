@@ -205,8 +205,9 @@ better-deepseek-harness/
 ├── src/                  # 源码
 │   ├── index.js          # 主机侧：settings 命名空间、/ext/api 路由、技能/插件生命周期、文件树读写、工具参数修复、图片转述、MCP
 │   ├── client.js         # 浏览器侧：设置页区块、终端/Git 页签、侧栏文件树、输入优化按钮（__ModuleLoader__ 工厂格式）
-│   └── tool-args.ts      # 模型工具参数修复纯函数（完整 TypeScript；构建后为 lib/tool-args.js）
-├── tests/                # vitest 规格（tests/tool-args.spec.ts、tests/host-wiring.spec.ts）
+│   ├── tool-args.ts      # 模型工具参数修复纯函数（完整 TypeScript；构建后为 lib/tool-args.js）
+│   └── ansi.ts           # 终端 ANSI 转义流式剥离纯函数（构建后为 lib/ansi.js）
+├── tests/                # vitest 规格（tool-args / ansi / host-wiring / built-smoke）
 ├── docs/                 # docs/architecture.md（架构）、docs/development.md（开发指南）
 ├── lib/                  # 构建产物（npm run build 生成并提交进 git —— 安装方无需任何构建工具）
 └── README.md

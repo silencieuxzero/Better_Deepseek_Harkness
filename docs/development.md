@@ -11,7 +11,7 @@ better-deepseek-harness/
 ├── install.ps1           # 一键安装脚本（免构建，复制 lib/ 产物）
 ├── tsconfig.json         # 类型检查（strict，noEmit）
 ├── tsconfig.build.json   # 构建（tsc 发射到 lib/）
-├── src/                  # 源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts（纯逻辑）
+├── src/                  # 源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts / ansi.ts（纯逻辑）
 ├── tests/                # vitest 规格（*.spec.ts）
 ├── docs/                 # 架构与开发文档
 ├── lib/                  # 构建产物（提交进 git，安装免构建）
