@@ -56,6 +56,14 @@ describe("built lib/ artifact", () => {
     expect(resolveTavilySettings({ maxResults: 3 }).maxResults).toBe(3);
   });
 
+  it("loads the compiled github.js", async () => {
+    const { GITHUB_DEFAULTS, parseRepoRef, resolveGithubSettings, validateGithubToken } = await import("../lib/github.js");
+    expect(GITHUB_DEFAULTS.enabled).toBe(true);
+    expect(parseRepoRef("octocat", "Hello-World").ok).toBe(true);
+    expect(resolveGithubSettings({ timeoutMs: 10000 }).timeoutMs).toBe(10000);
+    expect(validateGithubToken("ghp_" + "a".repeat(36))).toBeNull();
+  });
+
   it("loads the compiled terminal-buffer.js", async () => {
     const { createTerminalBuffer, appendTerminalBuffer, terminalBufferSlice } = await import("../lib/terminal-buffer.js");
     const state = createTerminalBuffer();

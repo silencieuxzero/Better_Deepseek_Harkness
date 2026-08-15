@@ -80,6 +80,19 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
 - Integration: when enabled, a `tavily_search` tool is registered for the model and a system-prompt hint tells it to call it automatically whenever it needs real-time information (news, prices, recent events) or cannot answer confidently; results (summary + source list + raw content) are injected for reference, and sources are cited on request
 - Graceful degradation: when the master switch is off, the API key is missing, or a call fails, a clear error is returned (turned into a tool error result by the agent loop) and the model answers from its own knowledge — **normal replies are never blocked**; switch changes take effect live (settings `watch` registers / deregisters the tool and the prompt hint — no restart)
 
+**GitHub repository access**: the "GitHub" tab on the settings page (`ext-center.github`)
+
+- Options:
+  - **Token (optional)**: password field with show/hide toggle, write-only, never echoed; saving with an empty field keeps the previous value; format-validated on save (must start with `ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_` / `github_pat_` and be at least 20 characters)
+  - **Enable GitHub tools**: master switch (default on — public repositories need no token)
+- Integration: when enabled, five tools are registered for the model with a system-prompt hint:
+  - `github_repo`: repository metadata (description / stars / forks / default branch / language / license / topics)
+  - `github_tree`: directory listing (files and subdirectories with sizes; a file path is answered with a pointer to `github_file`)
+  - `github_file`: file content (base64-decoded, capped at 64 KiB; binary files are flagged; a directory path is answered with a pointer to `github_tree`)
+  - `github_search`: repository search (GitHub search syntax, e.g. `topic:rust stars:>1000`, 1–10 results)
+  - `github_releases`: recent releases (tag / name / date / release notes, notes truncated to 4000 characters)
+- Safety and graceful degradation: without a token calls are unauthenticated (60 requests/hour/IP, fixed `x-github-api-version: 2022-11-28` header); 401 (invalid token) / 403 (rate limit) / 404 errors map to readable messages turned into tool error results by the agent loop — **normal replies are never blocked**; when the master switch is off or a call fails, the model answers from its own knowledge; switch changes take effect live (settings `watch` registers / deregisters — no restart)
+
 ### Conversation & Sidebar
 
 **Sidebar file tree**: the "File Tree" button at the bottom of the sidebar
@@ -263,9 +276,10 @@ All of the above fields may be omitted (omitting means the default is used); the
 3. "Plugins" tab: pick a source and fill in an npm package name / tarball URL / local directory / Git repository address, click install; installed plugins can be enabled, disabled, uninstalled
 4. "Settings" tab: change this plugin's preferences (saved to the `ext-center` section of `settings.yaml`)
 5. "Tavily" tab: enter your API Key and turn on "Enable search"; in conversations the model will automatically search for real-time information and cite sources
-6. Conversation page: click the star icon "Optimize Input" at the bottom right of the input box (between the send button and the context button); the current model optimizes the input and writes it back into the input box
-7. Bottom of the sidebar: click "Archive" to view archived conversations, check them and click "Delete" to batch **permanently** delete (confirmation required; sessions still running / loading are automatically skipped and reported)
-8. Rescue mode: enters automatically after a failed Harness boot — once the minimal boot succeeds, a dialog lists the disabled third-party plugins; select some and click "Enable selected & reload", or use "Restore all" / "Keep disabled". You can also trigger it manually with "Enter rescue mode" on the Plugins tab
+6. "GitHub" tab: nothing to configure for public repositories; fill in a token and turn on "Enable GitHub tools" for higher rate limits or private repositories — in conversations the model can query repository metadata, list directories, read files, search repositories and list releases
+7. Conversation page: click the star icon "Optimize Input" at the bottom right of the input box (between the send button and the context button); the current model optimizes the input and writes it back into the input box
+8. Bottom of the sidebar: click "Archive" to view archived conversations, check them and click "Delete" to batch **permanently** delete (confirmation required; sessions still running / loading are automatically skipped and reported)
+9. Rescue mode: enters automatically after a failed Harness boot — once the minimal boot succeeds, a dialog lists the disabled third-party plugins; select some and click "Enable selected & reload", or use "Restore all" / "Keep disabled". You can also trigger it manually with "Enter rescue mode" on the Plugins tab
 
 > Security: all mutation endpoints and read endpoints that expose local paths/output (`/ext/api/state`, the file tree, terminal output, Git reads, the MCP list) are loopback-only by default; to manage over LAN, turn on `allowLan` on the Settings page. Also note: installing from a Git source means running that repository's code — installation/loading and the automatic build (`npm install` executes npm lifecycle scripts declared by that repository) all run its contents, so only install repositories you trust.
 
@@ -278,7 +292,7 @@ All of the above fields may be omitted (omitting means the default is used); the
 | Endpoint | Description |
 | --- | --- |
 | `GET /ext/api/state` | Full state: skill list, plugin install records, loader entries, configuration, plus `limits` (the caps and client poll intervals, see "Deployment Configuration") |
-| `POST /ext/api/config` | Writes the `ext-center` settings namespace (`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot` / `vision` / `tavily`) |
+| `POST /ext/api/config` | Writes the `ext-center` settings namespace (`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot` / `vision` / `tavily` / `github`) |
 
 ### File Tree
 

@@ -66,6 +66,34 @@ import {
   validateTavilyApiKey
 } from "./tavily.js";
 import {
+  GITHUB_DEFAULTS,
+  GITHUB_RELEASES_CAP,
+  GITHUB_RELEASE_BODY_CAP,
+  GITHUB_SEARCH_CAP,
+  GITHUB_TIMEOUT_MAX,
+  GITHUB_TIMEOUT_MIN,
+  GITHUB_TOKEN_MAX_LENGTH,
+  formatGithubFileOutput,
+  formatGithubReleasesOutput,
+  formatGithubRepoOutput,
+  formatGithubSearchOutput,
+  formatGithubTreeOutput,
+  githubContentsUrl,
+  githubErrorMessage,
+  githubHeaders,
+  githubReleasesUrl,
+  githubRepoUrl,
+  githubSearchUrl,
+  mapGithubContentsResponse,
+  mapGithubReleasesResponse,
+  mapGithubRepoResponse,
+  mapGithubSearchResponse,
+  parseRepoRef,
+  resolveGithubSettings,
+  validateGithubPath,
+  validateGithubToken
+} from "./github.js";
+import {
   RESCUE_FILE,
   RESCUE_STATE_VERSION,
   buildRescuePlan,
@@ -241,7 +269,8 @@ const DEFAULTS = Object.freeze({
     maxImages: 4,
     maxTokens: 1024
   }),
-  tavily: TAVILY_DEFAULTS
+  tavily: TAVILY_DEFAULTS,
+  github: GITHUB_DEFAULTS
 });
 
 /* ─────────────────────────── plugin config ─────────────────────────── */
@@ -369,7 +398,12 @@ const SettingsSchema = z.object({
     searchDepth: z.union(["basic", "advanced"]).default(DEFAULTS.tavily.searchDepth),
     maxResults: z.number().min(TAVILY_MAX_RESULTS_MIN).max(TAVILY_MAX_RESULTS_MAX).default(DEFAULTS.tavily.maxResults),
     includeRaw: z.boolean().default(DEFAULTS.tavily.includeRaw)
-  }).default({ ...DEFAULTS.tavily })
+  }).default({ ...DEFAULTS.tavily }),
+  github: z.object({
+    enabled: z.boolean().default(DEFAULTS.github.enabled),
+    token: z.string().default(DEFAULTS.github.token),
+    timeoutMs: z.number().min(GITHUB_TIMEOUT_MIN).max(GITHUB_TIMEOUT_MAX).default(DEFAULTS.github.timeoutMs)
+  }).default({ ...DEFAULTS.github })
 });
 
 /* ─────────────────────────── errors ─────────────────────────── */
@@ -429,7 +463,10 @@ function readConfig(ctx) {
   const tavily = storedSection.tavily && typeof storedSection.tavily === "object" && !Array.isArray(storedSection.tavily)
     ? { ...DEFAULTS.tavily, ...storedSection.tavily }
     : { ...DEFAULTS.tavily };
-  return { ...DEFAULTS, ...storedSection, vision, tavily };
+  const github = storedSection.github && typeof storedSection.github === "object" && !Array.isArray(storedSection.github)
+    ? { ...DEFAULTS.github, ...storedSection.github }
+    : { ...DEFAULTS.github };
+  return { ...DEFAULTS, ...storedSection, vision, tavily, github };
 }
 
 /** The skill install root: the `skillRoot` setting, or the default user skill directory. */
@@ -2568,6 +2605,507 @@ function registerTavilySearch(ctx, configOf) {
   return sync;
 }
 
+/* ─────────────────────────── github api tools ─────────────────────────── */
+
+/** System-prompt order: right after the tavily guidance (tool:tavily_search is 112). */
+const GITHUB_SECTION_ORDER = 113;
+/**
+ * ToolDefinition timeout ceiling for the github_* tools. The live per-request
+ * budget comes from the `ext-center.github.timeoutMs` setting at execution
+ * time; this ceiling only bounds the harness-level cooperative budget.
+ */
+const GITHUB_TOOL_TIMEOUT_MS = GITHUB_TIMEOUT_MAX;
+
+/** Model guidance for when to reach for the github_* tools. */
+const GITHUB_SECTION_TEXT = "Use the github_repo, github_tree, github_file, github_search, and github_releases tools to query GitHub repositories through the GitHub REST API: repository metadata, directory listings, file contents, repository search, and release lists. Cite the relevant URLs as markdown links in your answer.";
+
+/** Pending-call presentation: a generic card titled by the target resource. */
+function presentGithubCall(args) {
+  const target = String(args?.repo ?? args?.query ?? args?.path ?? "github");
+  return { card: "generic", title: target, kind: "github", rawInput: target };
+}
+
+/** Completed-call presentation: a generic github card (the render carries the text). */
+function presentGithubResult(args, result) {
+  if (result.isError) return void 0;
+  return { card: "generic", kind: "github", title: String(args?.repo ?? args?.query ?? args?.path ?? "github") };
+}
+
+/**
+ * One GitHub REST call: reads the LIVE ext-center.github settings (gate,
+ * token, timeout) at call time, fetches with the cooperative signal, and maps
+ * failures to a clear model-facing error.
+ */
+async function githubApiCall(configOf, url, exec) {
+  let settings;
+  try {
+    settings = resolveGithubSettings(configOf().github);
+  } catch {
+    throw new Error("GitHub settings are unreadable — check the ext-center section of settings.yaml");
+  }
+  if (!settings.enabled) {
+    throw new Error("GitHub API tools are disabled (enable them in Settings → Better DeepSeek Harness → GitHub). Answer from your own knowledge.");
+  }
+  const signal = exec?.signal !== void 0 && typeof AbortSignal.any === "function"
+    ? AbortSignal.any([exec.signal, AbortSignal.timeout(settings.timeoutMs)])
+    : exec?.signal;
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: githubHeaders(settings.token),
+      ...(signal !== void 0 ? { signal } : {})
+    });
+  } catch (error) {
+    if (exec?.signal?.aborted === true) throw new Error("GitHub API call aborted");
+    throw new Error(`GitHub API request failed: ${error?.message ?? String(error)}`);
+  }
+  let body = null;
+  try {
+    body = await response.json();
+  } catch { /* non-JSON body — error mapping falls back to the status text */ }
+  if (!response.ok) throw new Error(githubErrorMessage(response.status, body, url));
+  return body ?? {};
+}
+
+/** Resolve the owner/repo arguments into a validated ref (throws on bad input). */
+function githubRepoRef(args) {
+  const parsed = parseRepoRef(args?.owner, args?.repo);
+  if (!parsed.ok) throw new Error(parsed.message);
+  return parsed.ref;
+}
+
+/** The optional `ref` argument, trimmed (undefined when absent/blank). */
+function githubRefArg(args) {
+  return typeof args?.ref === "string" && args.ref.trim() !== "" ? args.ref.trim() : void 0;
+}
+
+/**
+ * The model-facing `github_repo` tool: repository metadata through
+ * `GET /repos/{owner}/{repo}`.
+ */
+function githubRepoToolDefinition(configOf) {
+  return defineTool({
+    name: "github_repo",
+    description: "Fetch metadata for a GitHub repository (description, stars, forks, default branch, language, license, topics) through the GitHub REST API.",
+    parameters: {
+      repo: {
+        type: "string",
+        required: true,
+        description: "Repository name, or \"owner/repo\" (e.g. \"octocat/Hello-World\")."
+      },
+      owner: {
+        type: "string",
+        description: "Repository owner (optional when repo is given as \"owner/repo\")."
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          fullName: { type: "string", required: true },
+          htmlUrl: { type: "string", required: true },
+          description: { type: "string" },
+          defaultBranch: { type: "string", required: true },
+          stars: { type: "number", required: true },
+          forks: { type: "number", required: true },
+          openIssues: { type: "number", required: true },
+          language: { type: "string" },
+          license: { type: "string" },
+          topics: { type: "array", required: true, items: { type: "string" } },
+          pushedAt: { type: "string" },
+          archived: { type: "boolean", required: true }
+        }
+      },
+      render: (_args, value) => [{ type: "text", text: formatGithubRepoOutput(value) }],
+      presentationMeta: () => void 0
+    },
+    timeoutMs: GITHUB_TOOL_TIMEOUT_MS,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const ref = githubRepoRef(args);
+      const body = await githubApiCall(configOf, githubRepoUrl(ref.owner, ref.repo), exec);
+      return mapGithubRepoResponse(body);
+    },
+    presentCall: presentGithubCall,
+    presentResult: presentGithubResult
+  });
+}
+
+/**
+ * The model-facing `github_tree` tool: directory listing through
+ * `GET /repos/{owner}/{repo}/contents/{path}` (an array response). A file
+ * path rejects with guidance to use github_file.
+ */
+function githubTreeToolDefinition(configOf) {
+  return defineTool({
+    name: "github_tree",
+    description: "List a directory of a GitHub repository (files and subdirectories with sizes) through the GitHub REST API contents endpoint.",
+    parameters: {
+      repo: {
+        type: "string",
+        required: true,
+        description: "Repository name, or \"owner/repo\" (e.g. \"octocat/Hello-World\")."
+      },
+      owner: {
+        type: "string",
+        description: "Repository owner (optional when repo is given as \"owner/repo\")."
+      },
+      path: {
+        type: "string",
+        description: "Directory path inside the repository (default: repository root)."
+      },
+      ref: {
+        type: "string",
+        description: "Branch, tag, or commit SHA (default: the default branch)."
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          entries: {
+            type: "array",
+            required: true,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                name: { type: "string", required: true },
+                path: { type: "string", required: true },
+                type: { type: "string", required: true },
+                size: { type: "number" },
+                downloadUrl: { type: "string" }
+              }
+            }
+          },
+          truncated: { type: "boolean", required: true }
+        }
+      },
+      render: (_args, value) => [{ type: "text", text: formatGithubTreeOutput(value) }],
+      presentationMeta: () => void 0
+    },
+    timeoutMs: GITHUB_TOOL_TIMEOUT_MS,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const ref = githubRepoRef(args);
+      const path = String(args?.path ?? "").trim();
+      const pathProblem = validateGithubPath(path);
+      if (pathProblem !== null) throw new Error(pathProblem);
+      const body = await githubApiCall(configOf, githubContentsUrl(ref.owner, ref.repo, path, githubRefArg(args)), exec);
+      const result = mapGithubContentsResponse(body);
+      if (result.kind === "file") {
+        throw new Error(`"${path || "/"}" is a file, not a directory — use github_file to read it`);
+      }
+      return { entries: result.entries, truncated: result.truncated };
+    },
+    presentCall: presentGithubCall,
+    presentResult: presentGithubResult
+  });
+}
+
+/**
+ * The model-facing `github_file` tool: file content through
+ * `GET /repos/{owner}/{repo}/contents/{path}` (an object response). Base64 is
+ * decoded and capped; a directory path rejects with guidance to use
+ * github_tree.
+ */
+function githubFileToolDefinition(configOf) {
+  return defineTool({
+    name: "github_file",
+    description: "Read a file from a GitHub repository (decoded text content, capped at 64 KiB) through the GitHub REST API contents endpoint.",
+    parameters: {
+      repo: {
+        type: "string",
+        required: true,
+        description: "Repository name, or \"owner/repo\" (e.g. \"octocat/Hello-World\")."
+      },
+      owner: {
+        type: "string",
+        description: "Repository owner (optional when repo is given as \"owner/repo\")."
+      },
+      path: {
+        type: "string",
+        required: true,
+        description: "File path inside the repository (e.g. \"src/index.ts\")."
+      },
+      ref: {
+        type: "string",
+        description: "Branch, tag, or commit SHA (default: the default branch)."
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          content: { type: "string", required: true },
+          size: { type: "number", required: true },
+          truncated: { type: "boolean", required: true },
+          binary: { type: "boolean", required: true }
+        }
+      },
+      render: (_args, value) => [{ type: "text", text: formatGithubFileOutput(value) }],
+      presentationMeta: () => void 0
+    },
+    timeoutMs: GITHUB_TOOL_TIMEOUT_MS,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const ref = githubRepoRef(args);
+      const path = String(args?.path ?? "").trim();
+      if (path.length === 0) throw new Error("path must be a non-empty string");
+      const pathProblem = validateGithubPath(path);
+      if (pathProblem !== null) throw new Error(pathProblem);
+      const body = await githubApiCall(configOf, githubContentsUrl(ref.owner, ref.repo, path, githubRefArg(args)), exec);
+      const result = mapGithubContentsResponse(body);
+      if (result.kind === "dir") {
+        throw new Error(`"${path}" is a directory, not a file — use github_tree to list it`);
+      }
+      return { content: result.content, size: result.size, truncated: result.truncated, binary: result.binary };
+    },
+    presentCall: presentGithubCall,
+    presentResult: presentGithubResult
+  });
+}
+
+/**
+ * The model-facing `github_search` tool: repository search through
+ * `GET /search/repositories`.
+ */
+function githubSearchToolDefinition(configOf) {
+  return defineTool({
+    name: "github_search",
+    description: "Search GitHub repositories by query (name, description, readme, language, stars, topics) through the GitHub REST API.",
+    parameters: {
+      query: {
+        type: "string",
+        required: true,
+        description: "The search query (GitHub search syntax, e.g. \"topic:rust stars:>1000\")."
+      },
+      limit: {
+        type: "number",
+        description: `Max results, 1-${GITHUB_SEARCH_CAP} (default 5).`
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          totalCount: { type: "number", required: true },
+          items: {
+            type: "array",
+            required: true,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                fullName: { type: "string", required: true },
+                htmlUrl: { type: "string", required: true },
+                description: { type: "string" },
+                language: { type: "string" },
+                stars: { type: "number", required: true }
+              }
+            }
+          }
+        }
+      },
+      render: (_args, value) => [{ type: "text", text: formatGithubSearchOutput(value) }],
+      presentationMeta: () => void 0
+    },
+    timeoutMs: GITHUB_TOOL_TIMEOUT_MS,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const query = String(args?.query ?? "").trim();
+      if (query.length === 0) throw new Error("query must be a non-empty string");
+      if (query.length > 256) throw new Error("query is too long (max 256 chars)");
+      let limit = 5;
+      if (args?.limit !== void 0) {
+        const candidate = Number(args.limit);
+        if (!Number.isInteger(candidate) || candidate < 1 || candidate > GITHUB_SEARCH_CAP) {
+          throw new Error(`limit must be an integer between 1 and ${GITHUB_SEARCH_CAP}`);
+        }
+        limit = candidate;
+      }
+      const body = await githubApiCall(configOf, githubSearchUrl(query, limit), exec);
+      return mapGithubSearchResponse(body, limit);
+    },
+    presentCall: presentGithubCall,
+    presentResult: presentGithubResult
+  });
+}
+
+/**
+ * The model-facing `github_releases` tool: recent releases through
+ * `GET /repos/{owner}/{repo}/releases`.
+ */
+function githubReleasesToolDefinition(configOf) {
+  return defineTool({
+    name: "github_releases",
+    description: "List the recent releases of a GitHub repository (tag, name, publish date, release notes) through the GitHub REST API.",
+    parameters: {
+      repo: {
+        type: "string",
+        required: true,
+        description: "Repository name, or \"owner/repo\" (e.g. \"octocat/Hello-World\")."
+      },
+      owner: {
+        type: "string",
+        description: "Repository owner (optional when repo is given as \"owner/repo\")."
+      },
+      limit: {
+        type: "number",
+        description: `Max releases, 1-${GITHUB_RELEASES_CAP} (default 5).`
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          releases: {
+            type: "array",
+            required: true,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                tagName: { type: "string", required: true },
+                htmlUrl: { type: "string", required: true },
+                name: { type: "string" },
+                publishedAt: { type: "string" },
+                body: { type: "string" }
+              }
+            }
+          }
+        }
+      },
+      render: (_args, value) => [{ type: "text", text: formatGithubReleasesOutput(value) }],
+      presentationMeta: () => void 0
+    },
+    timeoutMs: GITHUB_TOOL_TIMEOUT_MS,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const ref = githubRepoRef(args);
+      let limit = 5;
+      if (args?.limit !== void 0) {
+        const candidate = Number(args.limit);
+        if (!Number.isInteger(candidate) || candidate < 1 || candidate > GITHUB_RELEASES_CAP) {
+          throw new Error(`limit must be an integer between 1 and ${GITHUB_RELEASES_CAP}`);
+        }
+        limit = candidate;
+      }
+      const body = await githubApiCall(configOf, githubReleasesUrl(ref.owner, ref.repo, limit), exec);
+      return mapGithubReleasesResponse(body, limit, GITHUB_RELEASE_BODY_CAP);
+    },
+    presentCall: presentGithubCall,
+    presentResult: presentGithubResult
+  });
+}
+
+/**
+ * Register the five github_* tools and their system-prompt guidance,
+ * following the live `ext-center.github.enabled` setting. Same lifecycle as
+ * the Tavily pair: effect-scoped disposal, settings-watch re-sync, and the
+ * execution-time gate as the correctness core (the sync is a UX refinement,
+ * never a security boundary).
+ *
+ * @param ctx - plugin context (`tools` is injected, `systemPrompt` is optional).
+ * @param configOf - live settings reader.
+ * @returns the sync function; apply() feeds it settings changes.
+ */
+function registerGithubTools(ctx, configOf) {
+  const definitions = [
+    githubRepoToolDefinition,
+    githubTreeToolDefinition,
+    githubFileToolDefinition,
+    githubSearchToolDefinition,
+    githubReleasesToolDefinition
+  ];
+  const state = { tools: [], section: null, promptCtx: null, promptRequested: false, disposed: false };
+  const disposeTools = () => {
+    for (const dispose of state.tools.splice(0)) {
+      try { dispose(); } catch { /* already gone */ }
+    }
+  };
+  const disposeSection = () => {
+    if (state.section === null) return;
+    try { state.section(); } catch { /* already gone */ }
+    state.section = null;
+  };
+  const disposeAll = () => {
+    disposeTools();
+    disposeSection();
+  };
+  const shutdown = () => {
+    // Permanent disposal (plugin unload) only. Toggling the master switch off
+    // calls disposeAll() instead, so a later re-enable can register again.
+    state.disposed = true;
+    disposeAll();
+  };
+  const ensureSection = () => {
+    if (state.disposed || state.section !== null) return;
+    if (state.promptCtx === null) {
+      // Inject the prompt fiber once; later toggles re-register through the
+      // same scoped context instead of spawning a new child fiber per toggle.
+      if (state.promptRequested || typeof ctx.inject !== "function") return;
+      state.promptRequested = true;
+      try {
+        ctx.inject(["systemPrompt"], (sctx) => {
+          state.promptCtx = sctx;
+          sync(configOf());
+        });
+      } catch (error) {
+        state.promptRequested = false;
+        ctx.logger?.warn?.("better-deepseek-harness: github prompt section inject failed: %s", error?.message ?? error);
+      }
+      return;
+    }
+    const sctx = state.promptCtx;
+    if (!sctx || !sctx.systemPrompt || typeof sctx.systemPrompt.section !== "function") return;
+    try {
+      state.section = sctx.systemPrompt.section({
+        name: "tool:github",
+        order: GITHUB_SECTION_ORDER,
+        text: GITHUB_SECTION_TEXT
+      });
+    } catch (error) {
+      ctx.logger?.warn?.("better-deepseek-harness: github prompt section registration failed: %s", error?.message ?? error);
+    }
+  };
+  const sync = (config) => {
+    if (state.disposed) return;
+    let enabled = false;
+    try {
+      enabled = resolveGithubSettings(config && typeof config === "object" ? config.github : void 0).enabled;
+    } catch { /* unreadable settings — treat as disabled */ }
+    if (!enabled) {
+      disposeAll();
+      return;
+    }
+    if (state.tools.length === 0 && ctx.tools && typeof ctx.tools.register === "function") {
+      try {
+        for (const make of definitions) {
+          state.tools.push(ctx.tools.register(make(configOf)));
+        }
+      } catch (error) {
+        ctx.logger?.warn?.("better-deepseek-harness: github tool registration failed: %s", error?.message ?? error);
+        disposeTools();
+      }
+    }
+    ensureSection();
+  };
+  // Both disposers are effect-scoped: unload cleans them up even when the
+  // settings watch never runs again.
+  if (typeof ctx.effect === "function") {
+    ctx.effect(() => shutdown, "better-deepseek-harness: github tool registrations");
+  }
+  try { sync(configOf()); } catch { /* non-fatal */ }
+  return sync;
+}
+
 /* ─────────────────────────── rescue mode ─────────────────────────── */
 
 /**
@@ -3185,6 +3723,11 @@ function apply(ctx, config = {}) {
   //     guidance, following the live ext-center.tavily.enabled setting.
   const syncTavily = registerTavilySearch(ctx, configOf);
 
+  // 0e. GitHub REST API: the github_repo/tree/file/search/releases tools plus
+  //     their prompt guidance, following the live ext-center.github.enabled
+  //     setting (public repositories need no token, so they default on).
+  const syncGithub = registerGithubTools(ctx, configOf);
+
   // 1. settings namespace (native preferences). The registration rides a
   //    scoped fiber that waits for the settings service (the same pattern as
   //    dsh-settings' installSettingsSection): ctx.get("settings") at
@@ -3198,12 +3741,14 @@ function apply(ctx, config = {}) {
         try {
           owner.watch((next) => {
             try { syncTavily(next); } catch { /* non-fatal */ }
+            try { syncGithub(next); } catch { /* non-fatal */ }
           });
         } catch { /* watcher registration is best-effort */ }
       }
       // The settings service may already be up when apply() ran the initial
       // sync — refresh once now that the namespace is authoritative.
       try { syncTavily(configOf()); } catch { /* non-fatal */ }
+      try { syncGithub(configOf()); } catch { /* non-fatal */ }
     });
   } catch (error) {
     ctx.logger?.warn?.("better-deepseek-harness: settings namespace registration failed: %s", error?.message ?? error);
@@ -3617,8 +4162,8 @@ function snapshotState(cx) {
     patchFile: layout.patchFile,
     skillRoots: skillRootsOf(layout, config).map((r) => ({ path: r.path, source: r.source })),
     config: (() => {
-      // The vision and Tavily API keys are write-only: never echo them back
-      // to the browser; surface only whether each one is configured.
+      // The vision, Tavily, and GitHub secrets are write-only: never echo
+      // them back to the browser; surface only whether each one is configured.
       const vision = config.vision && typeof config.vision === "object" ? { ...config.vision } : {};
       const visionApiKey = typeof vision.apiKey === "string" ? vision.apiKey : "";
       delete vision.apiKey;
@@ -3627,7 +4172,11 @@ function snapshotState(cx) {
       const tavilyApiKey = typeof tavily.apiKey === "string" ? tavily.apiKey : "";
       delete tavily.apiKey;
       tavily.apiKeyConfigured = tavilyApiKey !== "";
-      return { ...config, vision, tavily };
+      const github = config.github && typeof config.github === "object" ? { ...config.github } : {};
+      const githubToken = typeof github.token === "string" ? github.token : "";
+      delete github.token;
+      github.tokenConfigured = githubToken !== "";
+      return { ...config, vision, tavily, github };
     })(),
     settingsWritable: (() => {
       let settings;
@@ -3821,7 +4370,7 @@ const routes = {
         return base && typeof base === "object" && !Array.isArray(base) ? base : {};
       };
       const patch = {};
-      for (const key of ["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision", "tavily"]) {
+      for (const key of ["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision", "tavily", "github"]) {
         if (key in body) {
           const value = body[key];
           if (key === "allowLan" && typeof value !== "boolean") throw err("bad-request", "allowLan must be a boolean");
@@ -3889,6 +4438,35 @@ const routes = {
               value.maxImages = maxImages;
             }
             patch[key] = { ...baseSection(key), ...value };
+          } else if (key === "github") {
+            if (typeof value !== "object" || value === null || Array.isArray(value)) throw err("bad-request", "github must be an object");
+            if ("enabled" in value && typeof value.enabled !== "boolean") throw err("bad-request", "github.enabled must be a boolean");
+            if ("timeoutMs" in value) {
+              const timeoutMs = Number(value.timeoutMs);
+              if (!Number.isInteger(timeoutMs) || timeoutMs < GITHUB_TIMEOUT_MIN || timeoutMs > GITHUB_TIMEOUT_MAX) {
+                throw err("bad-request", `github.timeoutMs must be an integer between ${GITHUB_TIMEOUT_MIN} and ${GITHUB_TIMEOUT_MAX}`);
+              }
+              value.timeoutMs = timeoutMs;
+            }
+            // The token is write-only from the client's perspective: only a
+            // non-empty trimmed string updates the stored token; blank,
+            // absent, or wrongly-typed entries leave the stored token
+            // untouched. A non-empty entry must look like a GitHub token
+            // (format check).
+            if ("token" in value) {
+              if (typeof value.token !== "string" || value.token.trim() === "") {
+                delete value.token;
+              } else {
+                const trimmed = value.token.trim();
+                if (trimmed.length > GITHUB_TOKEN_MAX_LENGTH || trimmed.includes("\0")) throw err("bad-request", "github.token is invalid");
+                const problem = validateGithubToken(trimmed);
+                if (problem !== null) throw err("bad-request", problem);
+                value.token = trimmed;
+              }
+            }
+            // Sections replace as a whole: carry over untouched stored fields
+            // (notably the write-only token) so partial patches never erase them.
+            patch[key] = { ...baseSection(key), ...value };
           } else {
             patch[key] = value;
           }
@@ -3900,7 +4478,7 @@ const routes = {
           throw err("bad-request", "reset must be an array of strings");
         }
         for (const key of body.reset) {
-          if (!["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision", "tavily"].includes(key)) {
+          if (!["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision", "tavily", "github"].includes(key)) {
             throw err("bad-request", `unknown settings key \"${key}\"`);
           }
           resets.push(key);

@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | 宿主侧 | `src/index.js` | dsh 主机进程（Node） | 设置命名空间、/ext/api 路由、技能/插件生命周期、文件树、终端、git、MCP、图片转述、工具参数修复、急救模式看门狗与宿主副作用 |
 | 客户端 | `src/client.js` | 浏览器（Web UI） | 设置页「更好的 DeepSeek Harness」区块、对话页「终端」「Git」页签、侧栏文件树、急救模式恢复对话框 |
-| 纯逻辑 | `src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts`、`src/terminal-buffer.ts`、`src/rescue.ts`、`src/compat.ts` | 宿主侧 | 模型工具参数的 JSON 恢复与 description 修补；终端 ANSI 转义序列的流式剥离；Tavily 设置/请求/响应纯函数；终端输出字节环与增量 offset 语义；急救模式状态机、启动问题检测、禁用/恢复计划；dsh-web-ui 家族注册表、存在性检测与界面让位映射 |
+| 纯逻辑 | `src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts`、`src/github.ts`、`src/terminal-buffer.ts`、`src/rescue.ts`、`src/compat.ts` | 宿主侧 | 模型工具参数的 JSON 恢复与 description 修补；终端 ANSI 转义序列的流式剥离；Tavily 设置/请求/响应纯函数；GitHub REST API 的设置/参数校验/URL 构建/响应映射/格式化纯函数；终端输出字节环与增量 offset 语义；急救模式状态机、启动问题检测、禁用/恢复计划；dsh-web-ui 家族注册表、存在性检测与界面让位映射 |
 
 `package.json` 的 `dsh` 字段声明了这个插件如何进入运行时：
 
@@ -30,6 +30,7 @@
 | 拦截工具调用 | `ctx.on("tools/execute", ...)` 瀑布 | 参数校验前修复 description 缺失与损坏 JSON（与 `dsh-tool-call-timeout-policy` 同机制） |
 | 拦截模型请求 | `ctx.on("llm/stream", ...)` 瀑布 | 含图片的请求先由视觉模型转述成文字；监听器返回异步可迭代对象（async generator），与瀑布“最外层返回值必须是 async iterable”的约定一致 |
 | 模型搜索工具 | `ctx.tools.register` + `ctx.inject(["systemPrompt"], ...)` 的 `systemPrompt.section` | `ext-center.tavily.enabled` 开启时注册 `tavily_search` 工具与提示引导（设置变更经 settings 命名空间 owner 的 `watch` 联动注册/注销）；执行时读实时设置，未启用/未配置/调用失败抛清晰错误，由 agent loop 转为工具错误结果——模型看到提示后凭已有知识作答，不阻塞正常回答 |
+| GitHub 仓库工具 | `ctx.tools.register` + `ctx.inject(["systemPrompt"], ...)` 的 `systemPrompt.section` | `ext-center.github.enabled` 为真（默认开，公开仓库无需 token）时注册 `github_repo` / `github_tree` / `github_file` / `github_search` / `github_releases` 五个工具与提示引导；生命周期与 Tavily 相同（effect 释放、settings `watch` 联动、执行时实时读设置与 token，未启用/请求失败抛清晰错误，不阻塞正常回答） |
 | 人类命令 | `ctx.get("commands")` 存在时 `commands.register(...)` | `/rescue` 命令（状态 / apply / trigger）：无 GUI 宿主的急救交互面（dsh-TUI 等把注册表命令并入斜杠菜单）；Web 宿主也有该注册表，命令与对话框并存互不干扰 |
 | 图片准入桥 | 包装 `ctx.llm.resolveModelInfo` | `vision.enabled` 时给当前模型信息追加 `image` 模态，通过宿主 api-gateway 的图片准入校验（`MODEL_DOES_NOT_SUPPORT_IMAGES`），让带图请求进入上面的 llm/stream 转述瀑布；关闭时原样返回 |
 | 工作区解析 | `ctx.workspaceRegistry` | 文件树根目录（未配置时的默认来源） |
@@ -117,7 +118,7 @@ DeepSeek Harness 的启动审计（`assertEntriesActivated`）把任何第三方
 
 ## 客户端结构
 
-`src/client.js` 是构建产物格式的浏览器模块（`__ModuleLoader__.load({ id, factory })` 工厂），由 boot manifest 注入。它在设置页注册「更好的 DeepSeek Harness」区块（含「Tavily」页签：API Key 可见性切换、搜索深度、最大结果数、原始内容与总开关，保存/重置/格式校验全部回到 /ext/api/config），并通过 `conversation.view` slot 提供「终端」「Git」页签、在侧栏底部提供文件树与归档面板、通过 `conversation.input.right` slot 提供「优化输入」按钮（真实 DOM 节点定位在发送按钮与上下文按钮之间）。文件树 / Git / 终端三个表面经 dsh-web-ui 兼容门延迟注册（见「dsh-web-ui 兼容补丁」），其余表面无条件注册。归档面板从 `sessions` / `workspaces` 标准快照读取已归档会话，支持勾选后批量调用 `/ext/api/archive/delete` 永久删除。急救弹窗经侧栏底部一个不可见挂载点渲染：轮询 `/ext/api/rescue/status`，`phase === "applied"` 时用 primitives 的 `Modal`（body portal 全局限层）列出被禁用的第三方插件（名称 + 原因）供多选恢复。所有数据经 `fetch` 调 /ext/api；`/ext/api/state` 的 `limits` 块携带各上限与轮询间隔，界面文案与节奏自动跟随。客户端本身不做任何写入决策——一切变更都回到宿主侧的同一组端点。
+`src/client.js` 是构建产物格式的浏览器模块（`__ModuleLoader__.load({ id, factory })` 工厂），由 boot manifest 注入。它在设置页注册「更好的 DeepSeek Harness」区块（含「Tavily」页签：API Key 可见性切换、搜索深度、最大结果数、原始内容与总开关，以及「GitHub」页签：总开关与可选的 Token 配置——Token 仅写入不回显，保存/重置/格式校验全部回到 /ext/api/config），并通过 `conversation.view` slot 提供「终端」「Git」页签、在侧栏底部提供文件树与归档面板、通过 `conversation.input.right` slot 提供「优化输入」按钮（真实 DOM 节点定位在发送按钮与上下文按钮之间）。文件树 / Git / 终端三个表面经 dsh-web-ui 兼容门延迟注册（见「dsh-web-ui 兼容补丁」），其余表面无条件注册。归档面板从 `sessions` / `workspaces` 标准快照读取已归档会话，支持勾选后批量调用 `/ext/api/archive/delete` 永久删除。急救弹窗经侧栏底部一个不可见挂载点渲染：轮询 `/ext/api/rescue/status`，`phase === "applied"` 时用 primitives 的 `Modal`（body portal 全局限层）列出被禁用的第三方插件（名称 + 原因）供多选恢复。所有数据经 `fetch` 调 /ext/api；`/ext/api/state` 的 `limits` 块携带各上限与轮询间隔，界面文案与节奏自动跟随。客户端本身不做任何写入决策——一切变更都回到宿主侧的同一组端点。
 
 ## 模块职责
 
@@ -129,3 +130,4 @@ DeepSeek Harness 的启动审计（`assertEntriesActivated`）把任何第三方
 - `src/ansi.ts`：纯函数模块（`stripAnsiChunk`），无任何 I/O，流式剥离终端输出里的 ANSI CSI/OSC 转义序列。
 - `src/terminal-buffer.ts`：纯函数模块（`createTerminalBuffer` / `appendTerminalBuffer` / `terminalBufferSlice`），无任何 I/O，维护终端输出的字节环；客户端用绝对字节 offset 轮询，截断后仍能拿到正确增量。
 - `src/tavily.ts`：纯函数模块（Tavily 设置默认值 / API Key 校验 / 请求体构建 / 响应映射 / 结果格式化），无任何 I/O，宿主侧只负责接线 `fetch` 与工具注册。
+- `src/github.ts`：纯函数模块（GitHub 设置默认值 / Token 校验 / owner-repo 与路径解析 / 端点 URL 构建 / 请求头 / 响应映射（仓库信息、contents 目录与文件、仓库搜索、发布列表）/ 错误映射 / 结果格式化），无任何 I/O，宿主侧只负责接线 `fetch` 与五个工具注册。

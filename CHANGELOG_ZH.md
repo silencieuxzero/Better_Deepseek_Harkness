@@ -8,6 +8,11 @@
 
 ### 新增
 
+- **GitHub 仓库访问**：通过 GitHub REST API 查询仓库，设置页新增「GitHub」页签（`ext-center.github`）：
+  - 启用后向模型注册五个工具并加入系统提示引导：`github_repo`（仓库元数据：描述 / star / fork / 默认分支 / 语言 / 许可证 / 主题）、`github_tree`（列目录，含大小；路径指向文件时提示改用 `github_file`）、`github_file`（读文件：base64 解码、截断到 64 KiB、二进制标记；路径指向目录时提示改用 `github_tree`）、`github_search`（仓库搜索，GitHub 搜索语法，1–10 条）、`github_releases`（近期发布，说明截断到 4000 字符）；
+  - **Token 可选**：公开仓库免认证访问（60 次/小时/IP）；设置页密码框仅写入不回显（`ghp_` / `github_pat_` 等前缀格式校验，`/ext/api/state` 只返回 `tokenConfigured` 布尔）；401 / 403（限流）/ 404 等错误映射为可读提示；
+  - 默认开启（公开仓库无需配置），总开关可关；开关变更经 settings `watch` 实时生效；失败不阻塞回答（模型凭已有知识作答）。
+  - 纯逻辑在 `src/github.ts`（设置解析、Token 校验、owner/repo 与路径解析、URL 构建、响应映射、错误映射、结果格式化），由 `tests/github.spec.ts` 与新增的 `tests/host-wiring.spec.ts` 用例覆盖。
 - **dsh-TUI / 无头宿主适配**：对 [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 类终端宿主（组合里没有 `webServer` 服务）完整支持，所有不依赖 GUI 的功能原样工作：
   - `webServer` 改为可选注入（静态注入只保留 `tools`）：无 web 层的宿主里插件照常加载，急救看门狗、设置命名空间、技能目录、Tavily 工具、工具参数修复、图片转述全部继续工作，仅 `/ext/api` 路由不挂载；
   - **`/rescue` 斜杠命令**：宿主挂载 dsh-commands 注册表时自动注册（dsh-TUI 会把注册表命令并入其斜杠菜单）——`/rescue`（状态）、`/rescue apply all|none|<插件名,...>`（恢复选择）、`/rescue trigger`（手动进入急救），恢复逻辑与 Web 对话框走同一套纯函数；

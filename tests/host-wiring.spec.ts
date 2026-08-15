@@ -241,10 +241,16 @@ describe("apply() wiring", () => {
     const { ctx, settings, pendingInject } = mockCtx({ deferInject: true });
     apply(ctx, {});
     expect(settings.register).not.toHaveBeenCalled();
-    expect(pendingInject).toHaveLength(1);
+    // The github tools register by default and ride the same deferred-fiber
+    // pattern for their system-prompt section.
+    const injectNames = ctx.inject.mock.calls.map((call) => call[0] as string[]);
+    expect(injectNames).toContainEqual(["systemPrompt"]);
+    const settingsIndex = injectNames.findIndex((names) => names.includes("settings"));
+    expect(settingsIndex).toBeGreaterThanOrEqual(0);
+    expect(pendingInject).toHaveLength(2);
     // the settings service comes up later; the deferred fiber then registers
     const child = { settings: { register: vi.fn(() => () => {}) }, logger: ctx.logger };
-    pendingInject[0](child);
+    pendingInject[settingsIndex](child);
     expect(child.settings.register).toHaveBeenCalledWith(SETTINGS_NS, expect.anything(), expect.anything());
   });
 
@@ -1133,8 +1139,9 @@ describe("tavily search tool", () => {
     const { ctx } = mockCtx(options);
     apply(ctx, {});
     const register = ctx.tools.register as ReturnType<typeof vi.fn>;
-    if (register.mock.calls.length === 0) return undefined;
-    return register.mock.calls[0][0] as {
+    const call = register.mock.calls.find((entry) => (entry[0] as { name?: string }).name === "tavily_search");
+    if (call === undefined) return undefined;
+    return call[0] as {
       name: string;
       description: string;
       parameters: {
@@ -1167,10 +1174,11 @@ describe("tavily search tool", () => {
   it("re-registers the tool after the master switch is toggled off and back on", () => {
     const { ctx, settings } = mockCtx({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
     const register = ctx.tools.register as ReturnType<typeof vi.fn>;
+    const tavilyCalls = () => register.mock.calls.filter((call) => (call[0] as { name?: string }).name === "tavily_search");
     const firstDispose = vi.fn();
     register.mockReturnValueOnce(firstDispose);
     apply(ctx, {});
-    expect(register).toHaveBeenCalledTimes(1);
+    expect(tavilyCalls()).toHaveLength(1);
 
     // apply() feeds the settings owner's watch callback into the Tavily sync.
     const owner = settings.register.mock.results[0].value as { watch: ReturnType<typeof vi.fn> };
@@ -1180,19 +1188,25 @@ describe("tavily search tool", () => {
     expect(firstDispose).toHaveBeenCalledTimes(1);
 
     onSettings({ tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } });
-    expect(register).toHaveBeenCalledTimes(2);
+    expect(tavilyCalls()).toHaveLength(2);
     expect(firstDispose).toHaveBeenCalledTimes(1);
   });
 
   it("disposes the registered tool when the plugin unloads", () => {
-    const dispose = vi.fn();
     const { ctx, disposers } = mockCtx({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
     const register = ctx.tools.register as ReturnType<typeof vi.fn>;
-    register.mockReturnValue(dispose);
+    const toolDisposers: Array<ReturnType<typeof vi.fn>> = [];
+    register.mockImplementation(() => {
+      const dispose = vi.fn();
+      toolDisposers.push(dispose);
+      return dispose;
+    });
     apply(ctx, {});
-    expect(register).toHaveBeenCalledTimes(1);
+    // The first registration is tavily_search (apply registers it before the
+    // github tools); its disposer must run when the plugin unloads.
+    const tavilyDispose = toolDisposers[0];
     for (const disposer of disposers) disposer();
-    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(tavilyDispose).toHaveBeenCalledTimes(1);
   });
 
   it("executes a Tavily search and maps the response", async () => {
@@ -1286,6 +1300,220 @@ describe("tavily search tool", () => {
   });
 });
 
+describe("github api tools", () => {
+  interface GithubTool {
+    name: string;
+    description: string;
+    parameters: {
+      type: string;
+      properties: Record<string, { type: string }>;
+      required?: string[];
+    };
+    output: { schema: Record<string, unknown>; render: (args: unknown, value: unknown) => unknown[] };
+    execute: (args: Record<string, unknown>, exec: { signal: AbortSignal }) => Promise<Record<string, unknown>>;
+  }
+
+  /** The github_* definitions registered by apply(), keyed by name. */
+  function githubTools(options: MockOptions = {}) {
+    const { ctx } = mockCtx(options);
+    apply(ctx, {});
+    const register = ctx.tools.register as ReturnType<typeof vi.fn>;
+    const tools: Record<string, GithubTool> = {};
+    for (const call of register.mock.calls) {
+      const tool = call[0] as GithubTool;
+      if (typeof tool.name === "string" && tool.name.startsWith("github_")) tools[tool.name] = tool;
+    }
+    return tools;
+  }
+
+  const TOOL_NAMES = ["github_repo", "github_tree", "github_file", "github_search", "github_releases"];
+
+  it("registers the five github tools by default (public repos need no token)", () => {
+    const tools = githubTools();
+    expect(Object.keys(tools).sort()).toEqual([...TOOL_NAMES].sort());
+    for (const name of TOOL_NAMES) {
+      const tool = tools[name];
+      expect(tool.parameters.type).toBe("object");
+      expect(typeof tool.execute).toBe("function");
+      expect(tool.output.schema.type).toBe("object");
+    }
+    expect(tools.github_repo.parameters.properties.repo.type).toBe("string");
+    expect(tools.github_repo.parameters.required).toContain("repo");
+    expect(tools.github_file.parameters.required).toContain("path");
+    expect(tools.github_search.parameters.required).toContain("query");
+  });
+
+  it("does not register github tools while the master switch is off", () => {
+    expect(githubTools({ stored: { github: { enabled: false } } })).toEqual({});
+  });
+
+  it("re-registers the tools after the master switch is toggled off and back on", () => {
+    const { ctx, settings } = mockCtx({});
+    const register = ctx.tools.register as ReturnType<typeof vi.fn>;
+    const disposers: Array<ReturnType<typeof vi.fn>> = [];
+    register.mockImplementation(() => {
+      const dispose = vi.fn();
+      disposers.push(dispose);
+      return dispose;
+    });
+    apply(ctx, {});
+    expect(register.mock.calls.filter((call) => String((call[0] as { name: string }).name).startsWith("github_"))).toHaveLength(5);
+
+    const owner = settings.register.mock.results[0].value as { watch: ReturnType<typeof vi.fn> };
+    const onSettings = owner.watch.mock.calls[0][0] as (next: Record<string, unknown>) => void;
+
+    onSettings({ github: { enabled: false } });
+    expect(disposers.filter((dispose) => dispose.mock.calls.length > 0).length).toBe(5);
+
+    onSettings({ github: { enabled: true } });
+    expect(register.mock.calls.filter((call) => String((call[0] as { name: string }).name).startsWith("github_"))).toHaveLength(10);
+  });
+
+  it("disposes the registered tools when the plugin unloads", () => {
+    const { ctx, disposers } = mockCtx({});
+    const register = ctx.tools.register as ReturnType<typeof vi.fn>;
+    const dispose = vi.fn();
+    register.mockReturnValue(dispose);
+    apply(ctx, {});
+    expect(register.mock.calls.filter((call) => String((call[0] as { name: string }).name).startsWith("github_"))).toHaveLength(5);
+    for (const disposer of disposers) disposer();
+    expect(dispose).toHaveBeenCalledTimes(5);
+  });
+
+  it("executes github_repo and maps the response without auth headers", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({
+        full_name: "octocat/Hello-World",
+        html_url: "https://github.com/octocat/Hello-World",
+        description: "A repo",
+        default_branch: "main",
+        stargazers_count: 42,
+        forks_count: 7,
+        open_issues_count: 1,
+        language: "Rust",
+        license: { spdx_id: "MIT" },
+        topics: ["demo"],
+        pushed_at: "2026-01-01T00:00:00Z",
+        archived: false
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = githubTools().github_repo;
+      const result = await tool.execute({ repo: "octocat/Hello-World" }, { signal: new AbortController().signal });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe("https://api.github.com/repos/octocat/Hello-World");
+      const init = fetchMock.mock.calls[0][1] as { headers: Record<string, string> };
+      expect(init.headers.accept).toBe("application/vnd.github+json");
+      expect(init.headers["x-github-api-version"]).toBe("2022-11-28");
+      expect(init.headers).not.toHaveProperty("authorization");
+      expect(result).toEqual({
+        fullName: "octocat/Hello-World",
+        htmlUrl: "https://github.com/octocat/Hello-World",
+        description: "A repo",
+        defaultBranch: "main",
+        stars: 42,
+        forks: 7,
+        openIssues: 1,
+        language: "Rust",
+        license: "MIT",
+        topics: ["demo"],
+        pushedAt: "2026-01-01T00:00:00Z",
+        archived: false
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("sends Bearer auth when a token is configured", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, json: async () => ({ full_name: "o/r" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = githubTools({ stored: { github: { token: "ghp_" + "a".repeat(36) } } }).github_repo;
+      await tool.execute({ owner: "o", repo: "r" }, { signal: new AbortController().signal });
+      const init = fetchMock.mock.calls[0][1] as { headers: Record<string, string> };
+      expect(init.headers.authorization).toBe("Bearer " + "ghp_" + "a".repeat(36));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("executes github_file and decodes base64 content", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ name: "index.ts", path: "src/index.ts", size: 10, content: Buffer.from("console.log(1)\n").toString("base64") })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = githubTools().github_file;
+      const result = await tool.execute({ repo: "o/r", path: "src/index.ts" }, { signal: new AbortController().signal });
+      expect(fetchMock.mock.calls[0][0]).toBe("https://api.github.com/repos/o/r/contents/src/index.ts");
+      expect(result).toEqual({ content: "console.log(1)\n", size: 10, truncated: false, binary: false });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("guides the model when the contents endpoint returns the wrong kind", async () => {
+    // github_tree against a file path (the API returns an object) must point
+    // the model at github_file.
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ name: "a.ts", path: "a.ts", type: "file", size: 3, content: "aGk=" })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tree = githubTools().github_tree;
+      await expect(tree.execute({ repo: "o/r", path: "a.ts" }, { signal: new AbortController().signal })).rejects.toThrow(/use github_file/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    // github_file against a directory path (the API returns an array) must
+    // point the model at github_tree.
+    const fileFetch = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, json: async () => [{ name: "a", path: "a", type: "file" }] }));
+    vi.stubGlobal("fetch", fileFetch);
+    try {
+      const file = githubTools().github_file;
+      await expect(file.execute({ repo: "o/r", path: "src" }, { signal: new AbortController().signal })).rejects.toThrow(/use github_tree/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("maps a 404 into a friendly not-found error", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: false, status: 404, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = githubTools().github_repo;
+      await expect(tool.execute({ repo: "no/such-repo" }, { signal: new AbortController().signal })).rejects.toThrow(/not found/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("fails loudly (not blocking) when GitHub is disabled at execution time", async () => {
+    // The tool is registered while enabled, then the master switch flips off
+    // before the call — the execution-time gate must reject with a clear
+    // message instead of calling the API.
+    const stored = { github: { enabled: true } };
+    const tools = githubTools({ stored });
+    stored.github.enabled = false;
+    await expect(tools.github_repo.execute({ repo: "o/r" }, { signal: new AbortController().signal })).rejects.toThrow(/disabled/);
+  });
+
+  it("validates search and releases limits", async () => {
+    const tools = githubTools();
+    const search = tools.github_search;
+    await expect(search.execute({ query: "q", limit: 0 }, { signal: new AbortController().signal })).rejects.toThrow(/limit/);
+    await expect(search.execute({ query: "q", limit: 11 }, { signal: new AbortController().signal })).rejects.toThrow(/limit/);
+    await expect(search.execute({ query: "" }, { signal: new AbortController().signal })).rejects.toThrow(/non-empty/);
+    const releases = tools.github_releases;
+    await expect(releases.execute({ repo: "o/r", limit: 3.5 }, { signal: new AbortController().signal })).rejects.toThrow(/limit/);
+  });
+});
+
 describe("config route (tavily)", () => {
   async function mountedConfigHandler(stored: Record<string, unknown> = {}) {
     const { ctx, settings } = mockCtx({ stored });
@@ -1370,6 +1598,84 @@ describe("config route (tavily)", () => {
     const tavily = body.value.config.tavily as Record<string, unknown>;
     expect(tavily).not.toHaveProperty("apiKey");
     expect(tavily.apiKeyConfigured).toBe(true);
+  });
+});
+
+describe("config route (github)", () => {
+  async function mountedConfigHandler(stored: Record<string, unknown> = {}) {
+    const { ctx, settings } = mockCtx({ stored });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    return {
+      settings,
+      handler: register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>
+    };
+  }
+
+  it("stores a validated github patch with the trimmed token", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", {
+      github: { enabled: true, timeoutMs: 45000, token: "  ghp_" + "a".repeat(36) + "  " }
+    }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{
+      op: "set",
+      path: ["github"],
+      value: { enabled: true, timeoutMs: 45000, token: "ghp_" + "a".repeat(36) }
+    }]);
+  });
+
+  it("rejects a malformed token", async () => {
+    const { handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { github: { enabled: true, token: "sk-not-github" } }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
+    expect(body.error.message).toMatch(/ghp_/);
+  });
+
+  it("rejects timeoutMs outside the accepted range", async () => {
+    const { handler } = await mountedConfigHandler();
+    for (const timeoutMs of [1000, 999999, 3.5]) {
+      const res = fakeRes();
+      await handler(fakeReqWithBody("POST", "/ext/api/config", { github: { timeoutMs } }), res);
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("bad-request");
+    }
+  });
+
+  it("drops a blank token so the stored token is kept", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { github: { enabled: true, token: "   " } }), res);
+    const ops = settings.mutate.mock.calls[0][1] as Array<{ value: Record<string, unknown> }>;
+    expect(ops[0].value).not.toHaveProperty("token");
+    expect(JSON.parse(res.end.mock.calls[0][0]).ok).toBe(true);
+  });
+
+  it("resets the whole github section", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { reset: ["github"] }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{ op: "unset", path: ["github"] }]);
+  });
+
+  it("never echoes the stored github token through /ext/api/state", async () => {
+    const { ctx } = mockCtx({ stored: { github: { enabled: true, token: "ghp-secret-1234567890" } } });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReq("GET", "/ext/api/state", "127.0.0.1"), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(true);
+    const github = body.value.config.github as Record<string, unknown>;
+    expect(github).not.toHaveProperty("token");
+    expect(github.tokenConfigured).toBe(true);
   });
 });
 
