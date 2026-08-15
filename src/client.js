@@ -940,7 +940,9 @@ window.__ModuleLoader__.load({
 					setState(value);
 					setProviders(Array.isArray(value.llmProviders) ? value.llmProviders : []);
 					setLimits(pickLimits(value.limits));
-				}, function () { /* non-fatal */ });
+				}, function (reason) {
+					setError(String(reason && reason.message ? reason.message : reason));
+				});
 			}, [loadState]);
 			useEffect(function () { load(); }, [load]);
 			useEffect(function () {
@@ -1095,7 +1097,9 @@ window.__ModuleLoader__.load({
 			var writable = !state || state.settingsWritable !== false;
 			var load = useCallback(function () {
 				if (typeof loadState !== "function") return;
-				loadState().then(function (value) { setState(value); }, function () { /* non-fatal */ });
+				loadState().then(function (value) { setState(value); }, function (reason) {
+					setError(String(reason && reason.message ? reason.message : reason));
+				});
 			}, [loadState]);
 			useEffect(function () { load(); }, [load]);
 			useEffect(function () {
@@ -1216,7 +1220,9 @@ window.__ModuleLoader__.load({
 			var writable = !state || state.settingsWritable !== false;
 			var load = useCallback(function () {
 				if (typeof loadState !== "function") return;
-				loadState().then(function (value) { setState(value); }, function () { /* non-fatal */ });
+				loadState().then(function (value) { setState(value); }, function (reason) {
+					setError(String(reason && reason.message ? reason.message : reason));
+				});
 			}, [loadState]);
 			useEffect(function () { load(); }, [load]);
 			useEffect(function () {
@@ -1313,7 +1319,9 @@ window.__ModuleLoader__.load({
 			var writable = !state || state.settingsWritable !== false;
 			var load = useCallback(function () {
 				if (typeof loadState !== "function") return;
-				loadState().then(function (value) { setState(value); }, function () { /* non-fatal */ });
+				loadState().then(function (value) { setState(value); }, function (reason) {
+					setError(String(reason && reason.message ? reason.message : reason));
+				});
 			}, [loadState]);
 			useEffect(function () { load(); }, [load]);
 			useEffect(function () {

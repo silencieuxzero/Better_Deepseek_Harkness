@@ -2243,7 +2243,9 @@ describe("rescue mode watchdog", () => {
   it("applies rescue on duplicate loader entry ids", () => {
     __setRescueHostHooks({ pid: 9999 });
     const dir = rescueProfile({
-      patch: "- id: ext-center\n  name: better-deepseek-harness\n- id: dup\n  name: p1\n- id: dup\n  name: p2\n",
+      // duplicate ids only crash the tree when two INSERTED entries collide;
+      // standalone rows are id-targeted overrides and never duplicate
+      patch: "- id: ext-center\n  name: better-deepseek-harness\n- insert:\n    - id: dup\n      name: p1\n- insert:\n    - id: dup\n      name: p2\n",
       state: healthyState()
     });
     try {
@@ -2285,6 +2287,91 @@ describe("rescue mode watchdog", () => {
     // the default baseUrl points at lib/, which has no cordis.patch.yml —
     // the watchdog must skip it entirely
     expect(existsSync(join(process.cwd(), "lib", ".dsh-rescue.json"))).toBe(false);
+  });
+
+  /** Create a resolvable third-party profile bundle that mounts itself as a loader row. */
+  function withSelfMountedBundle(dir: string, name = "my-frontdoor") {
+    const pkgDir = join(dir, "node_modules", name);
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name, version: "1.0.0", dsh: { bundle: { patch: "patch.yml" } } }));
+    writeFileSync(join(pkgDir, "patch.yml"), `- insert:\n    - id: ${name}\n      name: ${name}\n`);
+    writeFileSync(join(dir, "package.json"), JSON.stringify({
+      name: "dsh-profile-test",
+      private: true,
+      dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", name] } }
+    }));
+  }
+
+  /** An already-applied rescue state whose plan over-protected a front-door bundle. */
+  function appliedStateOverProtecting() {
+    return JSON.stringify({
+      version: 1,
+      phase: "applied",
+      failure: { kind: "crash", message: "previous boot did not complete" },
+      plugins: [{ name: "broken-plugin", kind: "patch", reason: { code: "crash" }, id: "broken", rowIds: ["broken"] }],
+      appliedAt: "2026-08-15T00:00:00.000Z",
+      boot: { pid: 1234, startedAt: 1, healthy: false, healthyAt: null }
+    });
+  }
+
+  it("revises an applied rescue plan at settle when a web host was mistaken for headless", async () => {
+    // The apply()-time plan can over-protect self-mounted third-party bundles
+    // when the webServer service had not started yet (web host mistaken for
+    // headless). Once the settle window passes with the service up, the
+    // bundle disable rows must be written and the state updated.
+    __setRescueHostHooks({ pid: 9999 });
+    const dir = rescueProfile({ patch: "- id: ext-center\n  name: better-deepseek-harness\n", state: appliedStateOverProtecting() });
+    withSelfMountedBundle(dir);
+    vi.useFakeTimers();
+    try {
+      const { disposers } = mountedOf(dir, { config: { rescue: { enabled: true, settleMs: 3000 } } });
+      try {
+        // the applied plan over-protected the bundle: nothing disabled yet
+        expect(rowDisabled(rescuePatchOf(dir), "my-frontdoor")).toBe(false);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(rowDisabled(rescuePatchOf(dir), "my-frontdoor")).toBe(true);
+        const state = rescueStateOf(dir);
+        const bundle = state.plugins.find((plugin: { name: string }) => plugin.name === "my-frontdoor");
+        expect(bundle).toBeDefined();
+        expect(bundle.kind).toBe("bundle");
+        expect(state.boot.healthy).toBe(true);
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      vi.useRealTimers();
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null });
+    }
+  });
+
+  it("keeps the front-door protection when the settle window confirms a headless host", async () => {
+    // noWebServer: true — the settle revision must be a no-op: the bundle
+    // layer stays protected (it is the only interactive surface there).
+    __setRescueHostHooks({ pid: 9999 });
+    const dir = rescueProfile({ patch: "- id: ext-center\n  name: better-deepseek-harness\n", state: appliedStateOverProtecting() });
+    withSelfMountedBundle(dir);
+    vi.useFakeTimers();
+    try {
+      const { ctx, disposers } = mockCtx({
+        noWebServer: true,
+        baseUrl: pathToFileURL(join(dir, "package.json")).href
+      });
+      apply(ctx, { rescue: { enabled: true, settleMs: 3000 } });
+      try {
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(rowDisabled(rescuePatchOf(dir), "my-frontdoor")).toBe(false);
+        const state = rescueStateOf(dir);
+        expect(state.plugins.map((plugin: { name: string }) => plugin.name)).not.toContain("my-frontdoor");
+        expect(state.boot.healthy).toBe(true);
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      vi.useRealTimers();
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null });
+    }
   });
 });
 

@@ -1157,21 +1157,49 @@ function bundlePatchRows(pkgDir) {
 
 /* ─────────────────────────── skill provider ─────────────────────────── */
 
-function registerSkillProvider(ctx, configOf) {
-  return ctx.effect(() => {
-    let skills;
-    try {
-      skills = ctx.get("skills");
-    } catch { /* the skills service is optional in this deployment */ }
-    if (!skills || typeof skills.registerProvider !== "function") {
-      ctx.logger?.warn?.("better-deepseek-harness: skills service is not mounted — custom skill directories stay unprovided");
-      return;
+/**
+ * Run `onReady(service)` for an optional service: immediately when it is
+ * already available, otherwise when cordis re-emits `internal/service`
+ * (re-emitted on activation and on replacement, so a service that starts
+ * after this fiber — or is hot-reloaded later — is picked up). A static
+ * inject cannot be used for these services: a host that never mounts them
+ * would park this fiber in pending forever. Effect-scoped: the listener is
+ * released with the fiber; `onReady` runs at most once per service instance.
+ */
+function whenService(ctx, name, onReady) {
+  let last = null;
+  const check = () => {
+    let service;
+    try { service = ctx.get(name); } catch { /* the service is optional in this deployment */ }
+    if (service && service !== last) {
+      last = service;
+      onReady(service);
     }
-    const provider = buildCustomSkillProvider(configOf);
-    const dispose = skills.registerProvider(() => provider);
-    ctx.logger?.info?.("better-deepseek-harness: skill provider registered for custom directories");
-    return () => { if (typeof dispose === "function") dispose(); };
-  }, "better-deepseek-harness: skill provider");
+  };
+  check();
+  try {
+    ctx.on("internal/service", (changed) => {
+      if (changed !== name) return;
+      check();
+    });
+  } catch (error) {
+    ctx.logger?.warn?.("better-deepseek-harness: %s service watcher registration failed: %s", name, error?.message ?? error);
+  }
+}
+
+function registerSkillProvider(ctx, configOf) {
+  // The skills service may start after this fiber (the same boot race as the
+  // webServer service): a one-shot ctx.get() would silently lose the custom
+  // skill directories forever.
+  whenService(ctx, "skills", (skills) => {
+    if (typeof skills.registerProvider !== "function") return;
+    ctx.effect(() => {
+      const provider = buildCustomSkillProvider(configOf);
+      const dispose = skills.registerProvider(() => provider);
+      ctx.logger?.info?.("better-deepseek-harness: skill provider registered for custom directories");
+      return () => { if (typeof dispose === "function") dispose(); };
+    }, "better-deepseek-harness: skill provider");
+  });
 }
 
 function buildCustomSkillProvider(configOf) {
@@ -3611,7 +3639,10 @@ function applyRescue(cx, failure) {
 
 /**
  * The one-shot settle check: after the startup window, either declare the
- * boot healthy (no problems) or apply rescue (a late startup failure).
+ * boot healthy (no problems) or apply rescue (a late startup failure). When
+ * rescue is already applied, the plan may have been computed before the
+ * webServer service came up (see reviseAppliedRescue below) — revise it now
+ * that the service status is settled.
  */
 function scheduleRescueSettle(cx, boot) {
   const { layout, ctx } = cx;
@@ -3620,6 +3651,7 @@ function scheduleRescueSettle(cx, boot) {
     const state = loadRescueState(layout);
     if (state.boot.pid !== boot.pid || state.boot.startedAt !== boot.startedAt) return; // a newer boot record took over
     const { layers, protect } = thirdPartyBundleLayers(layout, ctx, NAME, cx.cfg.rescue.protectBundles);
+    if (state.phase === "applied") reviseAppliedRescue(cx, state, layers, protect);
     const problems = startupProblems(loadPatchListSafe(layout), liveEntriesOf(ctx), NAME, {
       includePending: true,
       extraIds: layers.filter((layer) => !protect.has(layer.name)).flatMap((layer) => layer.rowIds)
@@ -3628,9 +3660,47 @@ function scheduleRescueSettle(cx, boot) {
       applyRescue(cx, problems[0]);
       return;
     }
-    saveRescueState(layout, markBootHealthy(state, Date.now()));
+    saveRescueState(layout, markBootHealthy(loadRescueState(layout), Date.now()));
   }, cx.cfg.rescue.settleMs);
   rescueTimers.add(timer);
+}
+
+/**
+ * Revise an already-applied rescue plan once the settle window reveals the
+ * true host shape. The apply()-time plan may have been computed while the
+ * webServer service had not started yet, so a web host was mistaken for a
+ * headless one and its self-mounted third-party bundles were front-door
+ * protected (kept enabled). Now that the service status is settled, re-run
+ * the same planner with the correct protect set and write only the delta —
+ * the planner skips rows it already disabled, so this is a no-op unless the
+ * status actually changed. The patch writer hot-applies the new disables.
+ */
+function reviseAppliedRescue(cx, state, layers, protect) {
+  const { layout, ctx } = cx;
+  try {
+    const plan = buildRescuePlan(
+      loadPatchListSafe(layout),
+      layers,
+      NAME,
+      liveEntriesOf(ctx),
+      state.failure ?? { kind: "crash", message: "the previous boot did not complete" },
+      protect
+    );
+    if (!plan.changed) return;
+    savePatchList(layout, plan.updatedList, readPatchRaw(layout));
+    const merged = [...state.plugins];
+    for (const plugin of plan.plugins) {
+      if (!merged.some((entry) => entry.name === plugin.name)) merged.push(plugin);
+    }
+    saveRescueState(layout, { ...state, plugins: merged });
+    ctx.logger?.warn?.(
+      "better-deepseek-harness: rescue plan revised at settle — disabled %d more third-party bundle(s): %s",
+      plan.plugins.length,
+      plan.plugins.map((plugin) => plugin.name).join(", ")
+    );
+  } catch (error) {
+    ctx.logger?.warn?.("better-deepseek-harness: rescue plan revision failed: %s", error?.message ?? error);
+  }
 }
 
 /**
@@ -3817,43 +3887,46 @@ async function applyRescueCommandText(cx, names) {
  * one from dsh-base, so the command exists there too — harmless).
  */
 function registerRescueCommands(ctx, cx) {
-  let commands;
-  try { commands = ctx.get("commands"); } catch { /* the command registry is optional */ }
-  if (!commands || typeof commands.register !== "function") return false;
-  ctx.effect(() => commands.register({
-    name: "rescue",
-    description: "Rescue mode: show status, restore plugins, or trigger manually",
-    input: { hint: "status | apply all|none|<names> | trigger" },
-    handler: async (invocation) => {
-      const raw = String(invocation?.rawInput ?? "").trim();
-      const parts = raw.split(/\s+/).filter((part) => part !== "");
-      const verb = parts[0] ?? "";
-      try {
-        if (verb === "apply") {
-          const names = parts.slice(1).join(",").split(",")
-            .map((name) => name.trim())
-            .filter((name) => name !== "");
-          return { kind: "success", text: await applyRescueCommandText(cx, names) };
+  // The commands registry may start after this fiber (the same boot race as
+  // the webServer service): wait for it — in a headless host the /rescue
+  // command IS the rescue interaction surface, so a one-shot ctx.get() would
+  // strand the user without any way to restore.
+  whenService(ctx, "commands", (commands) => {
+    if (typeof commands.register !== "function") return;
+    ctx.effect(() => commands.register({
+      name: "rescue",
+      description: "Rescue mode: show status, restore plugins, or trigger manually",
+      input: { hint: "status | apply all|none|<names> | trigger" },
+      handler: async (invocation) => {
+        const raw = String(invocation?.rawInput ?? "").trim();
+        const parts = raw.split(/\s+/).filter((part) => part !== "");
+        const verb = parts[0] ?? "";
+        try {
+          if (verb === "apply") {
+            const names = parts.slice(1).join(",").split(",")
+              .map((name) => name.trim())
+              .filter((name) => name !== "");
+            return { kind: "success", text: await applyRescueCommandText(cx, names) };
+          }
+          if (verb === "trigger") {
+            const outcome = applyRescue(cx, {
+              kind: "manual",
+              message: "rescue mode was requested manually via the /rescue command"
+            });
+            const view = await rescueStatusOf(cx);
+            const head = outcome.applied
+              ? `已进入急救模式：禁用了 ${outcome.count} 个第三方插件`
+              : `急救未触发（${outcome.reason ?? "unknown"}）`;
+            return { kind: "success", text: `${head}\n${rescueStatusText(view)}` };
+          }
+          return { kind: "success", text: rescueStatusText(await rescueStatusOf(cx)) };
+        } catch (error) {
+          return { kind: "error", text: error?.message ?? String(error) };
         }
-        if (verb === "trigger") {
-          const outcome = applyRescue(cx, {
-            kind: "manual",
-            message: "rescue mode was requested manually via the /rescue command"
-          });
-          const view = await rescueStatusOf(cx);
-          const head = outcome.applied
-            ? `已进入急救模式：禁用了 ${outcome.count} 个第三方插件`
-            : `急救未触发（${outcome.reason ?? "unknown"}）`;
-          return { kind: "success", text: `${head}\n${rescueStatusText(view)}` };
-        }
-        return { kind: "success", text: rescueStatusText(await rescueStatusOf(cx)) };
-      } catch (error) {
-        return { kind: "error", text: error?.message ?? String(error) };
       }
-    }
-  }), "better-deepseek-harness: /rescue command");
-  ctx.logger?.info?.("better-deepseek-harness: /rescue command registered (non-GUI rescue surface)");
-  return true;
+    }), "better-deepseek-harness: /rescue command");
+    ctx.logger?.info?.("better-deepseek-harness: /rescue command registered (non-GUI rescue surface)");
+  });
 }
 
 /* ─────────────────────────── the plugin ─────────────────────────── */
@@ -4028,35 +4101,19 @@ function apply(ctx, config = {}) {
   // neither ride a static inject (a missing webServer would park this fiber
   // in pending forever on a headless host) nor a one-shot ctx.get(): the
   // web-app composition provides webServer concurrently with this apply(), so
-  // the service may simply not be active yet when this fiber runs. Mount
-  // eagerly when it already is, otherwise wait on the service event (cordis
-  // re-emits `internal/service` on activation and on replacement, so a
-  // webServer hot-reload re-mounts the routes too).
-  let mountedOn = null;
-  const mountApi = (server) => {
-    if (mountedOn === server) return;
-    mountedOn = server;
+  // the service may simply not be active yet when this fiber runs. whenService
+  // mounts eagerly when it already is and re-mounts on activation/replacement.
+  let apiMounted = false;
+  whenService(ctx, "webServer", (server) => {
+    if (typeof server.register !== "function") return;
+    apiMounted = true;
     ctx.effect(() => server.register({ kind: "prefix", path: "/ext/api", handler: handle }), "better-deepseek-harness: api routes");
     ctx.logger?.info?.("better-deepseek-harness: API mounted at /ext/api (profile %s)", layout.profileDir);
-  };
-  const mountApiWhenReady = () => {
-    let server;
-    try { server = ctx.get("webServer"); } catch { /* not mounted */ }
-    if (server && typeof server.register === "function") mountApi(server);
-  };
-  mountApiWhenReady();
-  try {
-    ctx.on("internal/service", (name) => {
-      if (name !== "webServer") return;
-      mountApiWhenReady();
-    });
-  } catch (error) {
-    ctx.logger?.warn?.("better-deepseek-harness: API route watcher registration failed: %s", error?.message ?? error);
-  }
+  });
   // After the boot window a still-unmounted API means a genuinely headless
   // host — say so once (the watcher stays dormant, released with the fiber).
   const apiMountNote = setTimeout(() => {
-    if (mountedOn === null) {
+    if (!apiMounted) {
       ctx.logger?.info?.("better-deepseek-harness: API not mounted — no webServer service in this host (headless/TUI deployment); host-side features stay active");
     }
   }, API_ROUTE_WAIT_MS);

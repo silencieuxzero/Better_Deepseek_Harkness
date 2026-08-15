@@ -81,18 +81,21 @@ describe("patch row helpers", () => {
     expect(patchRowIds(null as unknown as PatchRow)).toEqual([]);
   });
 
-  it("detects duplicate ids, including patch-vs-bundle collisions", () => {
+  it("detects duplicate ids among inserted entries and bundle layers", () => {
     const list = [
-      { id: "a" },
+      { id: "a" }, // standalone override — never an entry of its own
       { insert: [{ id: "a" }, { id: "b" }] },
       { id: "c" }
     ];
-    expect(duplicateEntryIds(list)).toEqual(["a"]);
-    // "b" exists in both the patch list and a bundle layer — a patch-vs-bundle
-    // collision is a duplicate too; "d" only exists in the bundle layer, so
-    // it is not.
-    expect(duplicateEntryIds(list, ["b", "d"])).toEqual(["a", "b"]);
+    // the standalone "a" merges into the inserted entry, so only real entry
+    // collisions register
+    expect(duplicateEntryIds(list)).toEqual([]);
+    expect(duplicateEntryIds(list, ["b", "d"])).toEqual(["b"]);
     expect(duplicateEntryIds([], ["x", "x"])).toEqual(["x"]);
+    expect(duplicateEntryIds([{ insert: [{ id: "a" }] }, { insert: [{ id: "a" }] }])).toEqual(["a"]);
+    // rescue disable rows merge into their bundle layer: one entry, never a
+    // duplicate — otherwise every rescued bundle would flag forever
+    expect(duplicateEntryIds([{ id: "rescue-row", disabled: true }], ["rescue-row"])).toEqual([]);
   });
 });
 
@@ -162,15 +165,15 @@ describe("startupProblems", () => {
   });
 
   it("reports duplicate ids with the duplicate-ids kind", () => {
-    const list = [{ id: "a" }, { id: "a" }];
+    const list = [{ insert: [{ id: "a" }] }, { insert: [{ id: "a" }] }];
     const problems = startupProblems(list, new Map(), "better-deepseek-harness");
     expect(problems).toHaveLength(1);
     expect(problems[0].kind).toBe("duplicate-ids");
     expect(problems[0].message).toContain("a");
   });
 
-  it("detects a patch id colliding with a bundle layer id", () => {
-    const list = [{ id: "a" }];
+  it("detects an inserted id colliding with a bundle layer id", () => {
+    const list = [{ insert: [{ id: "a" }] }];
     const problems = startupProblems(list, new Map(), "better-deepseek-harness", { extraIds: ["a"] });
     expect(problems).toHaveLength(1);
     expect(problems[0].kind).toBe("duplicate-ids");

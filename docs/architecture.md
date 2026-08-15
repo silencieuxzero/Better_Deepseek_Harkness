@@ -99,9 +99,11 @@ DeepSeek Harness 的启动审计（`assertEntriesActivated`）把任何第三方
 
 **安全与健壮性**：本插件自身行与 harness 核心行永不被禁用，急救不依赖任何第三方插件（其全部功能——路由、设置、终端、git、MCP、视觉、Tavily——照常工作）；看门狗与侧车写入全程异常安全（任何失败只记日志，绝不把本插件自身的 apply 弄挂，否则启动审计会连带杀死急救本身）；恢复只移除急救自己添加的禁用标记（bundle 禁用行要求恰好 `{id, disabled: true}` 两键才删除，手改过的行不删）。
 
+**启动竞态修订**：apply 时的急救计划可能早于 `webServer` 服务激活——Web 宿主会被误判为无头，把自我挂载的第三方 bundle 当作前门保护起来（多禁少禁的保守方向）。settle 窗口结束时用已确定的宿主形态重跑同一计划器，只写增量（新增的 bundle 禁用行热生效），并把新禁用的插件并入状态清单；真无头宿主下状态未变，修订是 no-op。配套地，重复 id 检测只统计 `insert` 行与 bundle 层声明的 id——独立行是 id 定向覆盖（合并进既有条目），急救自己写的 `{id, disabled: true}` 行与 bundle 层同 id 是合并关系、不算重复，否则每次急救过的 bundle 都会让 settle 永远无法把启动标记为健康。
+
 ## 无头 / TUI 宿主适配（headless & TUI hosts）
 
-[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 一类的终端宿主用 `dsh-base` 组合自建宿主进程，**不挂载 `webServer` 服务**。本插件的静态注入只声明必需的 `tools`，`webServer` 是可选项：apply 时服务已就绪就立即挂载 `/ext/api` 前缀路由；尚未就绪（include 加载的条目与 web-app 组合并发启动，服务晚于本 fiber 激活）则监听 `internal/service` 事件，服务激活或替换（webServer 热重载）时补挂——因此路由挂载不吃启动顺序的竞态，真无头宿主里监听器随 fiber 释放、不产生 pending fiber，只在 30s 启动窗口后记一条「API not mounted」日志。其余不依赖 GUI 的功能原样工作：
+[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 一类的终端宿主用 `dsh-base` 组合自建宿主进程，**不挂载 `webServer` 服务**。本插件的静态注入只声明必需的 `tools`，`webServer` 是可选项：apply 时服务已就绪就立即挂载 `/ext/api` 前缀路由；尚未就绪（include 加载的条目与 web-app 组合并发启动，服务晚于本 fiber 激活）则监听 `internal/service` 事件，服务激活或替换（webServer 热重载）时补挂——同一 `whenService` 机制也用于 `/rescue` 命令（`commands` 注册表）与自定义技能提供者（`skills` 服务）的晚到等待，避免一次性 `ctx.get()` 静默丢失表面。路由挂载不吃启动顺序的竞态，真无头宿主里监听器随 fiber 释放、不产生 pending fiber，只在 30s 启动窗口后记一条「API not mounted」日志。其余不依赖 GUI 的功能原样工作：
 
 - **急救模式**：看门狗、`.dsh-rescue.json` 侧车、补丁写入与 settle 判定全部是宿主侧逻辑，无 web 依赖；恢复交互改走 **`/rescue` 斜杠命令**（挂载 dsh-commands 注册表时自动注册，dsh-TUI 会把注册表命令并入其斜杠菜单并分发）：`/rescue`（状态）、`/rescue apply all|none|<插件名,...>`（恢复选择，空选择 = 保持禁用）、`/rescue trigger`（手动进入）。命令输出即状态视图的文本渲染，恢复走与 `/ext/api/rescue/apply` 完全相同的 `resolveRescue` 路径（含事务性补丁写入与按宿主形态重载：桌面刷新页面 / 命令行宿主重启进程）。
 - **前门保护**：见「急救模式 → 前门 bundle 保护」。

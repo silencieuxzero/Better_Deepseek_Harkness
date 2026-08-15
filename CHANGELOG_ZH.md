@@ -40,6 +40,9 @@
 ### 修复
 
 - **重启后设置页不再误报 "HTTP 200" 红色错误**：`/ext/api` 路由挂载不再依赖 apply 时刻的一次性 `ctx.get("webServer")`。include 加载的条目与 web-app 组合并发启动，webServer 服务可能晚于本插件 fiber 激活——一次性读取会让路由静默丢失，设置页随后拿到 SPA 的 HTML 回退页（HTTP 200），JSON 解析失败后报出 "HTTP 200"。现在服务已就绪则立即挂载，未就绪则监听 `internal/service` 事件补挂（激活与替换都会重新触发，webServer 热重载后也会重新挂载）；无头宿主不受影响（不产生 pending fiber，行为不变，仅多一条 30s 窗口后的提示日志）。客户端坏响应文案也改为带上请求路径，不再只显示裸状态码。
+- **可选服务挂载全面消除启动竞态**：`/rescue` 命令（`commands` 注册表）与自定义技能提供者（`skills` 服务）原来也是 apply 时一次性 `ctx.get()`，服务晚到就会永远注册不上。三个表面统一走新的 `whenService` 助手（就绪即挂、否则等 `internal/service` 事件）。
+- **急救计划在 settle 窗口结束时按真实宿主形态修订**：apply 时的计划可能早于 webServer 激活（Web 宿主被误判为无头，自我挂载的第三方 bundle 被过度保护）——settle 检查现在用已确定的服务状态重跑同一计划器，只热生效增量。配套修复：重复 id 检测只统计 `insert` 行与 bundle 层声明的 id——独立行是 id 定向覆盖，急救自己的 `{id, disabled: true}` 行与 bundle 层同 id 是合并关系，不再把每个被急救的 bundle 误报为重复（此前会导致启动永远无法标记为健康）。
+- **设置页签不再静默卡 "loading"**：设置 / Tavily / GitHub / 通知四个页签在 `/ext/api/state` 失败时显示错误，而不是永远转圈。
 - **Git 源安装自动补构建**：仓库未提交构建产物（`lib/` 完全不存在，即源码未构建）时，安装不再得到残缺包——克隆后检查包声明入口（`main` / `exports`），缺失则自动 `npm install` + `npm run build` 补构建（单步超时 10 分钟，失败给出明确报错并附输出尾部；本机无 npm 时报 `build-tool-missing`）。安装成功消息会标注「已自动执行 npm install 并构建」。
 - **Tavily 开关可反复启停**：把 Tavily 总开关关闭后再打开，现在会重新注册 `tavily_search` 工具与提示引导（此前首次关闭后同步状态被永久停用，无法再启用）。
 - **MCP 表单校验不再卡死界面**：超时 / 环境变量 / 请求头校验失败时只显示错误，不再让全部控件保持禁用。
