@@ -23,7 +23,9 @@ Get-ChildItem -Force -Path $here |
   Where-Object { $_.Name -ne ".git" -and $_.Name -ne "node_modules" -and $_.FullName -ne $target -and -not $_.FullName.StartsWith($target + [IO.Path]::DirectorySeparatorChar) } |
   ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force }
 
-# Append the insert row if absent (id-based dedupe on a comment marker).
+# Append the insert row if absent. Match the exact row id only — a substring
+# match would also hit plugin-managed rows like `ext-center.mcp.<name>` and
+# wrongly suppress re-adding the main row.
 $row = @"
 # --- better-deepseek-harness ---
 - insert:
@@ -31,7 +33,7 @@ $row = @"
       name: better-deepseek-harness
 "@
 $content = if (Test-Path $patchFile) { Get-Content $patchFile -Raw } else { "" }
-if ($content -notmatch "- id: ext-center") {
+if ($content -notmatch "(?m)^\s*-\s+id:\s*ext-center\s*$") {
   # Append as UTF-8 without BOM: Add-Content -Encoding UTF8 writes a BOM on
   # Windows PowerShell 5.1, which would corrupt an existing patch file mid-stream.
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

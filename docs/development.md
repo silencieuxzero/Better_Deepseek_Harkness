@@ -8,10 +8,10 @@
 better-deepseek-harness/
 ├── package.json          # 入口、dsh.bundle.patch + dsh.client 声明、scripts
 ├── cordis.patch.yml      # bundle 补丁：插入 ext-center 行
-├── install.ps1           # 一键安装脚本（免构建，复制 lib/ 产物）
+├── install.ps1           # 一键安装脚本（免构建，复制仓库内容，跳过 .git 与 node_modules）
 ├── tsconfig.json         # 类型检查（strict，noEmit）
 ├── tsconfig.build.json   # 构建（tsc 发射到 lib/）
-├── src/                  # 源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts / ansi.ts（纯逻辑）
+├── src/                  # 源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts / ansi.ts / tavily.ts / terminal-buffer.ts（纯逻辑）
 ├── tests/                # vitest 规格（*.spec.ts）
 ├── docs/                 # 架构与开发文档
 ├── lib/                  # 构建产物（提交进 git，安装免构建）
@@ -34,13 +34,14 @@ npm run check        # typecheck + test
 
 ## 构建
 
-`npm run build` 用 tsc（`allowJs`）把 `src/` 发射到 `lib/`：`index.js`、`client.js` 原样复制，`tool-args.ts` 编译为 `tool-args.js`。产物与手写时代的旧文件保持同构——`package.json` 的 `main`/`exports` 与 `dsh.client.inject` 指向不变，运行时行为不变。
+`npm run build` 用 tsc（`allowJs` 关闭）把 `src/*.ts` 发射到 `lib/*.js`（`ansi`、`tavily`、`terminal-buffer`、`tool-args`），再由 `scripts/copy-js.mjs` 把 `index.js`、`client.js` 原样复制到 `lib/`。产物与手写时代的旧文件保持同构——`package.json` 的 `main`/`exports` 与 `dsh.client.inject` 指向不变，运行时行为不变。
 
 ## 测试
 
 - `tests/tool-args.spec.ts`：纯逻辑（JSON 恢复、description 修补）的行为规格，是回归的主战场。
 - `tests/ansi.spec.ts`：终端 ANSI 剥离（CSI/OSC、跨 chunk 的未完成序列）的行为规格。
 - `tests/host-wiring.spec.ts`：用最小 ctx 双（mock）跑 `apply()`，断言接线（路由、设置命名空间、技能 provider、两个瀑布）与路由调度器（200/403/404/405、错误信封）；不触真实文件系统与网络。
+- `tests/terminal-buffer.spec.ts`：终端输出字节环（截断后 offset 语义、UTF-8 边界对齐）的行为规格。
 - `tests/built-smoke.spec.ts`：构建产物契约——`lib/` 的 JS 与 `src/` 逐字节一致，且 `lib/` 入口能在纯 Node ESM 下加载运行。
 
 新增行为先写测试再实现；纯函数进 `tool-args.ts`（或新的纯模块），有 I/O 的逻辑通过 ctx 双在 `host-wiring.spec.ts` 中覆盖。
@@ -56,7 +57,7 @@ npm run check        # typecheck + test
 
 ## 渐进式 TypeScript 迁移
 
-当前状态：`src/tool-args.ts` 与 `src/ansi.ts` 是完整 TypeScript（strict 通过）；`src/index.js` 与 `src/client.js` 仍是带 JSDoc 的 JS，`checkJs` 未开启（历史代码无参数类型标注，开启会产生大量噪音）。迁移路径：
+当前状态：`src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts` 与 `src/terminal-buffer.ts` 是完整 TypeScript（strict 通过）；`src/index.js` 与 `src/client.js` 仍是带 JSDoc 的 JS，`checkJs` 未开启（历史代码无参数类型标注，开启会产生大量噪音）。迁移路径：
 
 1. 逐个函数补 JSDoc 参数/返回类型，或直接转为 `.ts`；
 2. 待 JS 文件类型覆盖率达标后开启 `checkJs: true`，再逐步收紧为 `strict`；

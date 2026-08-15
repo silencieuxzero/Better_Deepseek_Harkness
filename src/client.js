@@ -64,7 +64,6 @@ window.__ModuleLoader__.load({
 			pluginInstallNote: "主机侧已热生效；客户端界面刷新页面后出现。",
 			pluginRemoveOk: "插件已卸载：",
 			pluginRemoveConfirm: "确定卸载插件 ",
-			pluginToggleOk: "已",
 			pluginEnabled: "已启用",
 			pluginDisabled: "已停用",
 			enable: "启用",
@@ -83,8 +82,8 @@ window.__ModuleLoader__.load({
 			phaseUnknown: "未知",
 			settingsTitle: "插件设置",
 			settingsIntro: "这些设置写入本部署的设置文档（settings.yaml 的 ext-center 节）。",
-			allowLan: "允许局域网写入",
-			allowLanHint: "开启后，局域网内的浏览器也能通过 /ext/api 安装、卸载或停用插件与技能。默认仅限本机（回环地址）。",
+			allowLan: "允许局域网访问",
+			allowLanHint: "开启后，局域网内的浏览器也能通过 /ext/api 读写插件功能（安装/卸载/停用、文件树、终端输出与 Git/MCP 读取）。默认仅限本机（回环地址）。",
 			skillRoot: "技能根目录",
 			skillRootHint: "安装技能的目标目录；留空使用 ~/.dsh/skills。",
 			customSkillDirs: "额外技能目录",
@@ -178,14 +177,17 @@ window.__ModuleLoader__.load({
 			mcpArgsHint: "例如 -y @modelcontextprotocol/server-filesystem C:\\path",
 			mcpEnv: "环境变量（每行 KEY=VALUE）",
 			mcpEnvHint: "仅字符串字面量；写入 profile 的 cordis.patch.yml",
+			mcpEnvInvalid: "环境变量必须为每行 KEY=VALUE 格式。",
 			mcpCwd: "工作目录",
 			mcpCwdHint: "留空使用启动目录",
 			mcpUrl: "服务器 URL",
 			mcpUrlHint: "如 http://localhost:3000/mcp",
 			mcpHeaders: "请求头（每行 名称: 值）",
 			mcpHeadersHint: "例如 Authorization: Bearer token",
+			mcpHeadersInvalid: "请求头必须为每行 名称: 值 格式。",
 			mcpTimeout: "工具调用超时（毫秒）",
-			mcpTimeoutHint: "留空使用默认 60000",
+			mcpTimeoutHint: "留空使用默认 60000；允许 1000-600000",
+			mcpTimeoutInvalid: "工具调用超时必须是 1000-600000 之间的整数。",
 			mcpAdd: "添加",
 			mcpRemove: "移除",
 			mcpRemoveConfirm: "确定移除 MCP 服务器 ",
@@ -229,6 +231,8 @@ window.__ModuleLoader__.load({
 			tavilyApiKey: "API Key",
 			tavilyApiKeyHint: "必填（启用时）。以 tvly- 开头；留空表示保留已保存的密钥",
 			tavilyApiKeyPlaceholder: "输入新密钥…",
+			tavilyApiKeySet: "已配置",
+			tavilyApiKeyUnset: "未配置",
 			tavilyShowKey: "显示",
 			tavilyHideKey: "隐藏",
 			tavilySearchDepth: "搜索深度（Search Depth）",
@@ -300,7 +304,6 @@ window.__ModuleLoader__.load({
 			pluginInstallNote: "Host rows activated live; a client UI appears after a page refresh.",
 			pluginRemoveOk: "Plugin removed: ",
 			pluginRemoveConfirm: "Uninstall plugin ",
-			pluginToggleOk: "Now ",
 			pluginEnabled: "Enabled",
 			pluginDisabled: "Disabled",
 			enable: "Enable",
@@ -319,8 +322,8 @@ window.__ModuleLoader__.load({
 			phaseUnknown: "Unknown",
 			settingsTitle: "Plugin settings",
 			settingsIntro: "These preferences are stored in this deployment's settings document (the ext-center section of settings.yaml).",
-			allowLan: "Allow LAN writes",
-			allowLanHint: "When enabled, browsers on the LAN can also install, uninstall, or disable skills and plugins through /ext/api. Off by default: loopback only.",
+			allowLan: "Allow LAN access",
+			allowLanHint: "When enabled, browsers on the LAN can also read and write plugin features through /ext/api (install/uninstall/disable, file tree, terminal output, and Git/MCP reads). Off by default: loopback only.",
 			skillRoot: "Skill root",
 			skillRootHint: "Where new skills are installed; leave empty for ~/.dsh/skills.",
 			customSkillDirs: "Extra skill directories",
@@ -414,14 +417,17 @@ window.__ModuleLoader__.load({
 			mcpArgsHint: "e.g. -y @modelcontextprotocol/server-filesystem C:\\path",
 			mcpEnv: "Environment (KEY=VALUE per line)",
 			mcpEnvHint: "String literals only; written to the profile's cordis.patch.yml",
+			mcpEnvInvalid: "Environment entries must use KEY=VALUE per line.",
 			mcpCwd: "Working directory",
 			mcpCwdHint: "Leave empty for the launch directory",
 			mcpUrl: "Server URL",
 			mcpUrlHint: "e.g. http://localhost:3000/mcp",
 			mcpHeaders: "Headers (Name: Value per line)",
 			mcpHeadersHint: "e.g. Authorization: Bearer token",
+			mcpHeadersInvalid: "Headers must use Name: Value per line.",
 			mcpTimeout: "Tool call timeout (ms)",
-			mcpTimeoutHint: "Leave empty for the 60000 default",
+			mcpTimeoutHint: "Leave empty for the 60000 default; allowed range 1000-600000",
+			mcpTimeoutInvalid: "Tool call timeout must be an integer between 1000 and 600000.",
 			mcpAdd: "Add",
 			mcpRemove: "Remove",
 			mcpRemoveConfirm: "Remove MCP server ",
@@ -465,6 +471,8 @@ window.__ModuleLoader__.load({
 			tavilyApiKey: "API Key",
 			tavilyApiKeyHint: "Required (when enabled). Starts with tvly-; leave empty to keep the stored key",
 			tavilyApiKeyPlaceholder: "Enter a new key…",
+			tavilyApiKeySet: "Configured",
+			tavilyApiKeyUnset: "Not configured",
 			tavilyShowKey: "Show",
 			tavilyHideKey: "Hide",
 			tavilySearchDepth: "Search depth",
@@ -505,7 +513,11 @@ window.__ModuleLoader__.load({
 			var json = await response.json().catch(function () {
 				return { ok: false, error: { code: "bad-response", message: "HTTP " + response.status } };
 			});
-			if (!json.ok) throw new Error(json.error && json.error.message ? json.error.message : "request failed");
+			if (!json.ok) {
+				var failure = new Error(json.error && json.error.message ? json.error.message : "request failed");
+				failure.code = json.error && json.error.code ? json.error.code : "bad-response";
+				throw failure;
+			}
 			return json.value;
 		}
 		//#endregion
@@ -738,7 +750,7 @@ window.__ModuleLoader__.load({
 			var toggle = useCallback(function (pluginName, enabled) {
 				setBusy(true);
 				callApi("/ext/api/plugin/set-enabled", { name: pluginName, enabled: enabled }).then(function () {
-					setMessage(t("pluginToggleOk") + (enabled ? t("pluginEnabled") : t("pluginDisabled")) + ": " + pluginName);
+					setMessage((enabled ? t("pluginEnabled") : t("pluginDisabled")) + ": " + pluginName);
 					load();
 				}, function (reason) {
 					setError(String(reason && reason.message ? reason.message : reason));
@@ -866,25 +878,23 @@ window.__ModuleLoader__.load({
 				if (draft.treeRoot !== (value.treeRoot || "")) patch.treeRoot = draft.treeRoot.trim();
 				if (custom.join("\u0000") !== (Array.isArray(value.customSkillDirs) ? value.customSkillDirs.join("\u0000") : "")) patch.customSkillDirs = custom;
 				var visionValue = value.vision && typeof value.vision === "object" ? value.vision : {};
+				// Clearing maxImages resets it to the default; clearing
+				// maxTokens resets it to the deployment default too. Both empty
+				// fields therefore mean "use the default" — matching the hint.
 				var visionDraft = {
 					enabled: !!draft.visionEnabled,
 					provider: draft.visionProvider.trim(),
 					model: draft.visionModel.trim(),
 					prompt: draft.visionPrompt.trim(),
 					apiUrl: draft.visionApiUrl.trim(),
-					maxImages: draft.visionMaxImages.trim() === "" ? 4 : Math.min(Math.max(parseInt(draft.visionMaxImages, 10) || 4, 1), limits.visionMaxImagesCap),
-					maxTokens: draft.visionMaxTokens.trim() === "" ? void 0 : Math.min(Math.max(parseInt(draft.visionMaxTokens, 10) || 0, 64), 8192)
+					maxImages: draft.visionMaxImages.trim() === "" ? Math.min(4, limits.visionMaxImagesCap) : Math.min(Math.max(parseInt(draft.visionMaxImages, 10) || 4, 1), limits.visionMaxImagesCap),
+					maxTokens: draft.visionMaxTokens.trim() === "" ? limits.visionMaxTokens : Math.min(Math.max(parseInt(draft.visionMaxTokens, 10) || 0, 64), 8192)
 				};
 				// A non-empty key entry updates the stored key; an empty entry
 				// (the usual state — the key never renders back) means "keep".
 				if (draft.visionApiKey.trim() !== "") visionDraft.apiKey = draft.visionApiKey.trim();
-				var visionChanged = visionDraft.enabled !== (visionValue.enabled === true) || visionDraft.provider !== (visionValue.provider || "") || visionDraft.model !== (visionValue.model || "") || visionDraft.prompt !== (visionValue.prompt || "") || visionDraft.apiUrl !== (visionValue.apiUrl || "") || visionDraft.maxImages !== (Number(visionValue.maxImages) || 4) || ("apiKey" in visionDraft) || (visionDraft.maxTokens !== void 0 && visionDraft.maxTokens !== (Number(visionValue.maxTokens) || limits.visionMaxTokens));
-				if (visionChanged) {
-					// maxTokens is a user override of the deployment default;
-					// an empty draft keeps whatever is stored (no key at all).
-					if (visionDraft.maxTokens === void 0) delete visionDraft.maxTokens;
-					patch.vision = visionDraft;
-				}
+				var visionChanged = visionDraft.enabled !== (visionValue.enabled === true) || visionDraft.provider !== (visionValue.provider || "") || visionDraft.model !== (visionValue.model || "") || visionDraft.prompt !== (visionValue.prompt || "") || visionDraft.apiUrl !== (visionValue.apiUrl || "") || visionDraft.maxImages !== (Number(visionValue.maxImages) || Math.min(4, limits.visionMaxImagesCap)) || ("apiKey" in visionDraft) || visionDraft.maxTokens !== (Number(visionValue.maxTokens) || limits.visionMaxTokens);
+				if (visionChanged) patch.vision = visionDraft;
 				if (Object.keys(patch).length === 0) {
 					setMessage(t("noop"));
 					setBusy(false);
@@ -897,7 +907,7 @@ window.__ModuleLoader__.load({
 				}, function (reason) {
 					setError(String(reason && reason.message ? reason.message : reason));
 				}).then(function () { setBusy(false); });
-			}, [ready, draft, state, limits.visionMaxImagesCap, t]);
+			}, [ready, draft, state, limits.visionMaxImagesCap, limits.visionMaxTokens, t]);
 			var reset = useCallback(function (field) {
 				if (!ready) return;
 				setBusy(true);
@@ -1071,7 +1081,7 @@ window.__ModuleLoader__.load({
 						jsx(Field, { label: t("tavilyApiKey"), hint: t("tavilyApiKeyHint"), children: jsxs("div", { className: "extc-keyrow", children: [
 							jsx("input", { type: draft.showKey ? "text" : "password", className: "extc-input", value: draft.apiKey, disabled: !writable || busy, placeholder: t("tavilyApiKeyPlaceholder"), autoComplete: "off", spellCheck: false, onChange: function (event) { setDraft(Object.assign({}, draft, { apiKey: event.target.value })); } }),
 							jsx(Button, { small: true, disabled: !writable || busy, onClick: function () { setDraft(Object.assign({}, draft, { showKey: !draft.showKey })); }, children: draft.showKey ? t("tavilyHideKey") : t("tavilyShowKey") }),
-							jsx("span", { className: "extc-tag", children: tavilyValue.apiKeyConfigured === true ? t("visionApiKeySet") : t("visionApiKeyUnset") })
+							jsx("span", { className: "extc-tag", children: tavilyValue.apiKeyConfigured === true ? t("tavilyApiKeySet") : t("tavilyApiKeyUnset") })
 						] }) }),
 						jsx(Field, { label: t("tavilySearchDepth"), hint: t("tavilySearchDepthHint"), children: jsx(Select, { value: draft.searchDepth, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { searchDepth: value })); }, options: [
 							{ value: "basic", label: t("tavilyDepthBasic") },
@@ -1153,6 +1163,8 @@ window.__ModuleLoader__.load({
 			var _g = useState(null), error = _g[0], setError = _g[1];
 			var _h = useState(null), copied = _h[0], setCopied = _h[1];
 			var copiedTimer = useRef(null);
+			var fileRequest = useRef(0);
+			var dirLoading = useRef(new Set());
 			var refresh = useCallback(function () {
 				setError(null);
 				treeEntries("").then(function (value) {
@@ -1160,6 +1172,7 @@ window.__ModuleLoader__.load({
 					setChildren({});
 					setExpanded(new Set());
 					setFailures({});
+					dirLoading.current.clear();
 				}, function (reason) {
 					setError(String(reason && reason.message ? reason.message : reason));
 				});
@@ -1176,15 +1189,19 @@ window.__ModuleLoader__.load({
 			var _l = useState(false), editorBusy = _l[0], setEditorBusy = _l[1];
 			var _m = useState(null), editorMessage = _m[0], setEditorMessage = _m[1];
 			var openFile = useCallback(function (filePath, name) {
+				var requestId = ++fileRequest.current;
 				setEditorError(null);
 				setEditorMessage(null);
 				setEditorText("");
 				setEditorBusy(true);
 				setEditing({ path: filePath, name: name });
 				treeFileRead(filePath).then(function (value) {
+					// A slower earlier read must never overwrite a newer file.
+					if (requestId !== fileRequest.current) return;
 					setEditorText(value.content);
 					setEditorBusy(false);
 				}, function (reason) {
+					if (requestId !== fileRequest.current) return;
 					setEditorError(String(reason && reason.message ? reason.message : reason));
 					setEditorBusy(false);
 				});
@@ -1236,7 +1253,8 @@ window.__ModuleLoader__.load({
 				});
 				if (isOpen) return;
 				if (children[dirPath] !== undefined) return;
-				if (loading.has(dirPath)) return;
+				if (dirLoading.current.has(dirPath)) return;
+				dirLoading.current.add(dirPath);
 				setLoading(function (prev) { var next = new Set(prev); next.add(dirPath); return next; });
 				setFailures(function (prev) { var next = Object.assign({}, prev); delete next[dirPath]; return next; });
 				treeEntries(dirPath).then(function (value) {
@@ -1252,6 +1270,7 @@ window.__ModuleLoader__.load({
 						return next;
 					});
 				}).then(function () {
+					dirLoading.current.delete(dirPath);
 					setLoading(function (prev) { var next = new Set(prev); next.delete(dirPath); return next; });
 				});
 			}, [expanded, children, loading]);
@@ -1388,6 +1407,7 @@ window.__ModuleLoader__.load({
 			var _g = useState(DEFAULT_LIMITS), limits = _g[0], setLimits = _g[1];
 			var cursor = useRef(0);
 			var outputRef = useRef(null);
+			var activeKeyRef = useRef(null);
 			var active = null;
 			for (var i = 0; i < terminals.length; i++) {
 				if (terminals[i].id === activeId) { active = terminals[i]; break; }
@@ -1418,16 +1438,22 @@ window.__ModuleLoader__.load({
 				setOutput("");
 			}, [activeKey]);
 			useEffect(function () {
+				activeKeyRef.current = activeKey;
 				if (!activeKey) return;
 				var timer = window.setInterval(function () {
 					callApi("/ext/api/terminal/output?id=" + encodeURIComponent(activeKey) + "&after=" + cursor.current).then(function (value) {
+						// Ignore responses that raced a terminal switch: appending
+						// them would mix the previous terminal's output into the
+						// newly active pane and corrupt the shared cursor.
+						if (activeKeyRef.current !== activeKey) return;
 						if (value.text) {
 							setOutput(function (prev) {
 								var next = prev + value.text;
 								return next.length > TERMINAL_DISPLAY_LIMIT ? next.slice(next.length - TERMINAL_DISPLAY_LIMIT) : next;
 							});
-							cursor.current += value.text.length;
 						}
+						if (Number.isFinite(value.cursor)) cursor.current = value.cursor;
+						else if (value.text) cursor.current += value.text.length;
 						if (!value.alive) {
 							setTerminals(function (prev) {
 								return prev.map(function (x) {
@@ -1601,12 +1627,18 @@ window.__ModuleLoader__.load({
 		function GitTab(props) {
 			var t = props.t;
 			var sessionId = typeof props.sessionId === "string" ? props.sessionId : "";
+			// The callbacks below are memoized, so gitCall reads the session
+			// through a ref: a session switch must not leave them targeting
+			// the previously mounted conversation.
+			var sessionIdRef = useRef(sessionId);
+			sessionIdRef.current = sessionId;
 			var gitCall = function (path, body) {
+				var currentSession = sessionIdRef.current || "";
 				var sep = path.indexOf("?") === -1 ? "?" : "&";
-				if (sessionId) path = path + sep + "sessionId=" + encodeURIComponent(sessionId);
+				if (currentSession) path = path + sep + "sessionId=" + encodeURIComponent(currentSession);
 				if (body === void 0) return callApi(path);
 				var payload = Object.assign({}, body || {});
-				if (sessionId) payload.sessionId = sessionId;
+				if (currentSession) payload.sessionId = currentSession;
 				return callApi(path, payload);
 			};
 			var _a = useState(null), repo = _a[0], setRepo = _a[1];
@@ -1619,6 +1651,7 @@ window.__ModuleLoader__.load({
 			var _h = useState(null), ok = _h[0], setOk = _h[1];
 			var _i = useState(null), busy = _i[0], setBusy = _i[1];
 			var _j = useState(DEFAULT_LIMITS), limits = _j[0], setLimits = _j[1];
+			var diffRequest = useRef(0);
 			var changes = repo ? repo.changes || [] : [];
 			var staged = changes.filter(function (c) { return c.staged === true; });
 			var unstaged = changes.filter(function (c) { return c.unstaged === true && c.untracked !== true; });
@@ -1650,9 +1683,12 @@ window.__ModuleLoader__.load({
 				return function () { window.clearInterval(timer); };
 			}, [refresh, loadBranches, limits.gitPollMs]);
 			var loadDiff = useCallback(function (path, stagedFlag) {
+				var requestId = ++diffRequest.current;
 				setSel({ path: path, staged: stagedFlag });
 				setDiff({ loading: true, path: path, staged: stagedFlag });
 				gitCall("/ext/api/git/diff?path=" + encodeURIComponent(path) + "&staged=" + (stagedFlag ? "1" : "0")).then(function (value) {
+					// A slower earlier response must never overwrite a newer diff.
+					if (requestId !== diffRequest.current) return;
 					setDiff({
 						loading: false,
 						path: value.path,
@@ -1664,6 +1700,7 @@ window.__ModuleLoader__.load({
 						lines: value.lines || []
 					});
 				}, function (reason) {
+					if (requestId !== diffRequest.current) return;
 					setDiff({ loading: false, path: path, staged: stagedFlag, failed: String(reason && reason.message ? reason.message : reason) });
 				});
 			}, []);
@@ -1671,6 +1708,19 @@ window.__ModuleLoader__.load({
 				setSel(null);
 				setDiff(null);
 			}, []);
+			// After a status refresh the selected file may be gone or have
+			// moved groups; drop a stale diff instead of showing a view that
+			// no longer matches any highlighted row.
+			useEffect(function () {
+				if (!repo || !sel) return;
+				var stillListed = changes.some(function (change) {
+					return change.path === sel.path && change.staged === sel.staged;
+				});
+				if (!stillListed) {
+					setSel(null);
+					setDiff(null);
+				}
+			}, [repo, sel]);
 			var toggleStage = useCallback(function (change, group) {
 				if (busy !== null) return;
 				var unstage = group === "staged";
@@ -1809,11 +1859,11 @@ window.__ModuleLoader__.load({
 				error ? jsx("div", { className: "extc-error", children: error }) : null,
 				ok ? jsx("div", { className: "extc-ok", children: ok }) : null,
 				jsxs("div", { className: "extc-git-bar", children: [
-					repo && repo.detached === true ? jsx("span", { className: "extc-git-ab", children: t("gitDetached") }) : jsx(Select, {
-						value: repo ? repo.branch || "" : "",
+					jsx(Select, {
+						value: repo ? (repo.branch || (repo.detached ? "" : "")) : "",
 						disabled: busy !== null || branches.length === 0,
 						onChange: function (name) { if (name && name !== (repo ? repo.branch : "")) checkout(name); },
-						options: branches.map(function (b) { return { value: b.name, label: (b.current ? "✓ " : "") + b.name }; })
+						options: (repo && repo.detached ? [{ value: "", label: t("gitDetached") }] : []).concat(branches.map(function (b) { return { value: b.name, label: (b.current ? "✓ " : "") + b.name }; }))
 					}),
 					repo && repo.upstream ? jsx("span", { className: "extc-git-ab", title: t("gitUpstream") + " " + repo.upstream, children: t("gitUpstream") + " " + repo.upstream }) : null,
 					repo && repo.ahead > 0 ? jsx("span", { className: "extc-git-ab extc-git-ab-up", title: t("gitAhead") + " " + repo.ahead, children: "↑" + repo.ahead }) : null,
@@ -1963,16 +2013,33 @@ window.__ModuleLoader__.load({
 				setError(null);
 				setMessage(null);
 				var payload = { name: name.trim(), transport: transport };
-				if (timeoutText.trim() !== "" && Number(timeoutText.trim()) > 0) payload.toolCallTimeoutMs = Number(timeoutText.trim());
+				if (timeoutText.trim() !== "") {
+					var timeoutMs = Number(timeoutText.trim());
+					if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) {
+						setError(t("mcpTimeoutInvalid"));
+						return;
+					}
+					payload.toolCallTimeoutMs = timeoutMs;
+				}
 				if (transport === "stdio") {
 					payload.command = command.trim();
 					var args = mcpLines(argsText);
 					if (args.length > 0) payload.args = args;
+					var envLines = mcpLines(envText);
+					if (envLines.some(function (line) { return line.indexOf("=") <= 0; })) {
+						setError(t("mcpEnvInvalid"));
+						return;
+					}
 					var env = mcpKeyValues(envText, "=");
 					if (Object.keys(env).length > 0) payload.env = env;
 					payload.cwd = cwd.trim();
 				} else {
 					payload.url = url.trim();
+					var headerLines = mcpLines(headersText);
+					if (headerLines.some(function (line) { return line.indexOf(":") <= 0; })) {
+						setError(t("mcpHeadersInvalid"));
+						return;
+					}
 					var headers = mcpKeyValues(headersText, ":");
 					if (Object.keys(headers).length > 0) payload.headers = headers;
 				}
@@ -1980,8 +2047,11 @@ window.__ModuleLoader__.load({
 					setBusy(false);
 					setMessage(t("mcpAdded") + value.name);
 					setName("");
+					setCommand("");
 					setArgsText("");
 					setEnvText("");
+					setCwd("");
+					setUrl("");
 					setHeadersText("");
 					setTimeoutText("");
 					load();

@@ -18,6 +18,9 @@
 
 ## 功能
 
+<details>
+<summary>点击展开功能列表</summary>
+
 ### 插件与技能管理
 
 **技能管理**
@@ -43,7 +46,7 @@
 
 | 设置项 | 说明 |
 | --- | --- |
-| `allowLan` | 是否允许局域网通过 `/ext/api` 写入（默认仅本机回环） |
+| `allowLan` | 是否允许局域网通过 `/ext/api` 访问（读写都包含：变更类接口以及文件树/终端输出/Git 读取/MCP 列表等回环端点；默认仅本机回环） |
 | `skillRoot` | 技能安装根目录（留空 = `~/.dsh/skills`） |
 | `customSkillDirs` | 额外技能目录，每行一个；其中的技能通过本插件注册的 provider 提供给所有会话 |
 | `treeRoot` | 侧栏文件树根目录（留空 = 最近注册的工作区，其次进程工作目录） |
@@ -116,6 +119,8 @@
   - `description` 缺失 / 为空 / 类型错误时自动补上中性占位符
   - `arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象
 - 避免无谓的 `INVALID_ARGS` 报错，让对话更流畅
+
+</details>
 
 ## 安装
 
@@ -214,7 +219,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 6. 会话页：在输入框右下角（发送按钮与上下文按钮之间）点击星星图标「优化输入」，当前模型会把输入优化后回填到输入框
 7. 侧栏底部：点击「归档」查看已归档对话，勾选后点击「删除」批量永久删除（需二次确认；仍在运行 / 加载中的会话会自动跳过并提示）
 
-> 安全：所有变更类接口默认只允许本机（回环地址）调用；如需局域网管理，在「设置」页打开 `allowLan`。
+> 安全：所有变更类接口以及会暴露本机路径/输出的读取端点（`/ext/api/state`、文件树、终端输出、Git 读取、MCP 列表）默认只允许本机（回环地址）调用；如需局域网管理，在「设置」页打开 `allowLan`。
 
 ## HTTP API（主机侧，前缀 /ext/api）
 
@@ -244,7 +249,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | `POST /ext/api/terminal/write` | `{id, data}` 写入输入（单次 ≤ 4096 字符；已退出终端拒绝） |
 | `POST /ext/api/terminal/resize` | `{id, cols, rows}` 调整终端尺寸（pty 模式生效） |
 | `POST /ext/api/terminal/kill` | `{id}` 关闭终端（幂等） |
-| `GET /ext/api/terminal/output?id=..&after=..` | 轮询增量输出：`after` 为客户端已读长度，返回 `{alive, exitCode, text}` |
+| `GET /ext/api/terminal/output?id=..&after=..` | 轮询增量输出：`after` 为客户端已读字节 offset，返回 `{alive, exitCode, text, cursor}`；`cursor` 是流的权威 offset（环形缓冲区截断后客户端以它重置，而不是自增） |
 
 ### Git
 
@@ -312,7 +317,8 @@ better-deepseek-harness/
 ├── cordis.patch.yml      # bundle 补丁：插入 ext-center 行
 ├── install.ps1           # 一键安装脚本（方式一，跳过 .git 与 node_modules）
 ├── tsconfig.json         # 类型检查（strict，noEmit）
-├── tsconfig.build.json   # 构建：tsc 发射 src/ → lib/
+├── tsconfig.build.json   # 构建：tsc 发射 src/*.ts → lib/，JS 由 copy-js.mjs 原样复制
+├── scripts/copy-js.mjs   # 构建时把 index.js / client.js 逐字节复制到 lib/
 ├── src/                  # 源码
 │   ├── index.js          # 主机侧：settings 命名空间、/ext/api 路由、技能/插件生命周期、
 │   │                     #   文件树读写、工具参数修复、图片转述、MCP、Tavily 工具注册
@@ -320,8 +326,9 @@ better-deepseek-harness/
 │   │                     #   终端/Git 页签、侧栏文件树、输入优化按钮（__ModuleLoader__ 工厂格式）
 │   ├── tool-args.ts      # 模型工具参数修复纯函数（构建后为 lib/tool-args.js）
 │   ├── ansi.ts           # 终端 ANSI 转义流式剥离纯函数（构建后为 lib/ansi.js）
+│   ├── terminal-buffer.ts # 终端输出字节环：截断安全的增量 offset（构建后为 lib/terminal-buffer.js）
 │   └── tavily.ts         # Tavily 搜索纯函数：默认值 / 校验 / 请求 / 映射 / 格式化（构建后为 lib/tavily.js）
-├── tests/                # vitest 规格（tool-args / ansi / tavily / host-wiring / built-smoke）
+├── tests/                # vitest 规格（tool-args / ansi / terminal-buffer / tavily / host-wiring / built-smoke）
 ├── docs/                 # docs/architecture.md（架构）、docs/development.md（开发指南）
 ├── lib/                  # 构建产物（npm run build 生成并提交进 git —— 安装方无需任何构建工具）
 └── README.md

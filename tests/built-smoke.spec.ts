@@ -56,4 +56,11 @@ describe("built lib/ artifact", () => {
     expect(validateTavilyApiKey("tvly-" + "a".repeat(32))).toBeNull();
     expect(resolveTavilySettings({ maxResults: 3 }).maxResults).toBe(3);
   });
+
+  it("loads the compiled terminal-buffer.js", async () => {
+    const { createTerminalBuffer, appendTerminalBuffer, terminalBufferSlice } = await import("../lib/terminal-buffer.js");
+    const state = createTerminalBuffer();
+    appendTerminalBuffer(state, "abcdefghij", 8);
+    expect(terminalBufferSlice(state, 0)).toEqual({ text: "cdefghij", cursor: 10 });
+  });
 });

@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | 宿主侧 | `src/index.js` | dsh 主机进程（Node） | 设置命名空间、/ext/api 路由、技能/插件生命周期、文件树、终端、git、MCP、图片转述、工具参数修复 |
 | 客户端 | `src/client.js` | 浏览器（Web UI） | 设置页「更好的 DeepSeek Harness」区块、对话页「终端」「Git」页签、侧栏文件树 |
-| 纯逻辑 | `src/tool-args.ts`、`src/ansi.ts` | 宿主侧 | 模型工具参数的 JSON 恢复与 description 修补；终端 ANSI 转义序列的流式剥离 |
+| 纯逻辑 | `src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts`、`src/terminal-buffer.ts` | 宿主侧 | 模型工具参数的 JSON 恢复与 description 修补；终端 ANSI 转义序列的流式剥离；Tavily 设置/请求/响应纯函数；终端输出字节环与增量 offset 语义 |
 
 `package.json` 的 `dsh` 字段声明了这个插件如何进入运行时：
 
@@ -73,4 +73,5 @@
 - `src/client.js`：浏览器侧（见上），另注册「优化输入」按钮并定位到发送按钮与上下文按钮之间。
 - `src/tool-args.ts`：纯函数模块（`tryParseJsonObject` / `repairToolArguments`），无任何 I/O，是工具参数单测的主战场。
 - `src/ansi.ts`：纯函数模块（`stripAnsiChunk`），无任何 I/O，流式剥离终端输出里的 ANSI CSI/OSC 转义序列。
+- `src/terminal-buffer.ts`：纯函数模块（`createTerminalBuffer` / `appendTerminalBuffer` / `terminalBufferSlice`），无任何 I/O，维护终端输出的字节环；客户端用绝对字节 offset 轮询，截断后仍能拿到正确增量。
 - `src/tavily.ts`：纯函数模块（Tavily 设置默认值 / API Key 校验 / 请求体构建 / 响应映射 / 结果格式化），无任何 I/O，宿主侧只负责接线 `fetch` 与工具注册。

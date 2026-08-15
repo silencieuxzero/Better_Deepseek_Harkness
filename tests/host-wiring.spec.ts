@@ -395,6 +395,32 @@ describe("vision capability bridge", () => {
     expect(info).toEqual({ inputModalities: ["image", "text"] });
   });
 
+  it("does not advertise image input while the vision route is incomplete", async () => {
+    // enabled but no provider/model means transcription would pass the image
+    // through untouched — the gateway must keep rejecting it in that case.
+    const { llm } = bridgeOf({
+      stored: { vision: { enabled: true, provider: "", model: "" } },
+      llm: {
+        stream: vi.fn(),
+        resolveModelInfo: vi.fn(async () => ({ inputModalities: ["text"] }))
+      }
+    });
+    const info = await (llm.resolveModelInfo as ReturnType<typeof vi.fn>)("deepseek", "deepseek-v4-flash");
+    expect(info).toEqual({ inputModalities: ["text"] });
+  });
+
+  it("does not advertise image input for the vision route itself", async () => {
+    const { llm } = bridgeOf({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: {
+        stream: vi.fn(),
+        resolveModelInfo: vi.fn(async () => ({ inputModalities: ["text"] }))
+      }
+    });
+    const info = await (llm.resolveModelInfo as ReturnType<typeof vi.fn>)("vp", "vm");
+    expect(info).toEqual({ inputModalities: ["text"] });
+  });
+
   it("leaves absent inputModalities untouched (api-gateway admits those)", async () => {
     const { llm } = bridgeOf({
       stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
@@ -441,6 +467,24 @@ describe("route dispatcher", () => {
     expect(body.value.plugins).toBeTruthy();
   });
 
+  it("sends the configured vision maxImagesCap through /ext/api/state limits", async () => {
+    const { ctx } = mockCtx();
+    apply(ctx, { vision: { maxImagesCap: 5 } });
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReq("GET", "/ext/api/state", "127.0.0.1"), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.value.limits.visionMaxImagesCap).toBe(5);
+  });
+
+  it("keeps /ext/api/state loopback-only like the other readers", async () => {
+    const handler = await mountedHandler();
+    const res = fakeRes();
+    await handler(fakeReq("GET", "/ext/api/state", "10.0.0.5"), res);
+    expect(res.writeHead).toHaveBeenCalledWith(403, expect.anything());
+  });
+
   it("rejects unknown paths with 404", async () => {
     const handler = await mountedHandler();
     const res = fakeRes();
@@ -472,6 +516,16 @@ describe("route dispatcher", () => {
     const handler = await mountedHandler();
     const res = fakeRes();
     await handler(fakeReq("GET", "/ext/api/%E0%A4%A", "127.0.0.1"), res);
+    expect(res.writeHead).toHaveBeenCalledWith(400, expect.anything());
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
+  });
+
+  it("rejects a non-object JSON body with a clear bad-request", async () => {
+    const handler = await mountedHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", null), res);
     expect(res.writeHead).toHaveBeenCalledWith(400, expect.anything());
     const body = JSON.parse(res.end.mock.calls[0][0]);
     expect(body.ok).toBe(false);
@@ -728,6 +782,33 @@ describe("config route", () => {
     expect(body.error.code).toBe("bad-request");
   });
 
+  it("rejects a vision maxImages outside the deployment cap", async () => {
+    const { ctx, settings } = mockCtx();
+    apply(ctx, { vision: { maxImagesCap: 4 } });
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { vision: { maxImages: 8 } }), res);
+    expect(settings.mutate).not.toHaveBeenCalled();
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
+    expect(body.error.message).toContain("1 and 4");
+  });
+
+  it("merges a partial vision patch with the stored section so the apiKey survives", async () => {
+    const { ctx, settings } = mockCtx({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm", apiKey: "sk-secret" } }
+    });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { vision: { enabled: false } }), res);
+    const ops = settings.mutate.mock.calls[0][1] as Array<{ value: Record<string, unknown> }>;
+    expect(ops[0].value).toEqual({ enabled: false, provider: "vp", model: "vm", apiKey: "sk-secret" });
+  });
+
   it("never echoes the stored apiKey back through /ext/api/state", async () => {
     const { ctx } = mockCtx({ stored: { vision: { enabled: true, provider: "custom", apiKey: "secret-123", apiUrl: "http://x.test" } } });
     apply(ctx, {});
@@ -778,6 +859,17 @@ describe("tavily search tool", () => {
   it("does not register tavily_search while the master switch is off", () => {
     const tool = registeredTool({ stored: { tavily: { enabled: false, apiKey: "tvly-" + "a".repeat(32) } } });
     expect(tool).toBeUndefined();
+  });
+
+  it("disposes the registered tool when the plugin unloads", () => {
+    const dispose = vi.fn();
+    const { ctx, disposers } = mockCtx({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
+    const register = ctx.tools.register as ReturnType<typeof vi.fn>;
+    register.mockReturnValue(dispose);
+    apply(ctx, {});
+    expect(register).toHaveBeenCalledTimes(1);
+    for (const disposer of disposers) disposer();
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it("executes a Tavily search and maps the response", async () => {
