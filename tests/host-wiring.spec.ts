@@ -15,6 +15,18 @@ interface MockOptions {
   llm?: { stream: (options: unknown) => AsyncIterable<unknown> } | undefined;
   /** value returned for ctx.get("attachments") (defaults to undefined). */
   attachments?: { readImage: (ref: unknown, signal?: unknown) => Promise<{ ref: { mediaType: string }, data: Uint8Array }> } | undefined;
+  /** value returned for ctx.get("workspaceRegistry") (defaults to undefined). */
+  workspaceRegistry?: {
+    archivedSessionIds: string[];
+    list?: () => Array<{ sessionIds: string[]; detachSession: (id: string) => Promise<void> | void }>;
+  } | undefined;
+  /** value returned for ctx.get("sessionPersistence") (defaults to undefined). */
+  sessionPersistence?: {
+    list: () => Promise<Array<{ id: string }>>;
+    locate: (header: { id: string }) => { path: string };
+  } | undefined;
+  /** value returned for ctx.get("sessions") (defaults to undefined). */
+  sessions?: { get: (id: string) => unknown } | undefined;
   /** when true, ctx.inject stores the callback instead of running it now. */
   deferInject?: boolean;
 }
@@ -41,6 +53,9 @@ function mockCtx(options: MockOptions = {}) {
       if (name === "skills") return skills;
       if (name === "llm") return options.llm;
       if (name === "attachments") return options.attachments;
+      if (name === "workspaceRegistry") return options.workspaceRegistry;
+      if (name === "sessionPersistence") return options.sessionPersistence;
+      if (name === "sessions") return options.sessions;
       return undefined;
     }),
     inject: vi.fn((names: string[], callback: (child: unknown) => void) => {
@@ -320,6 +335,140 @@ describe("route dispatcher", () => {
     const body = JSON.parse(res.end.mock.calls[0][0]);
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe("bad-request");
+  });
+});
+
+describe("input optimize route", () => {
+  async function mountedOptimizeHandler(llm?: { stream: (options: unknown) => AsyncIterable<unknown> }) {
+    const { ctx } = mockCtx({ llm });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    return register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+  }
+
+  it("calls the current model and returns optimized text", async () => {
+    const llm = {
+      stream: vi.fn(() => (async function* () {
+        yield { type: "text-delta", text: "优化后的输入" };
+        yield { type: "finish", reason: { kind: "stop" } };
+      })())
+    };
+    const handler = await mountedOptimizeHandler(llm);
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/input/optimize", {
+      text: "  帮我 优化 这段 输入  ",
+      provider: "deepseek",
+      model: "deepseek-v4",
+      sessionId: "s1",
+      reasoningEffort: "high"
+    }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(true);
+    expect(body.value.text).toBe("优化后的输入");
+    expect(llm.stream).toHaveBeenCalledTimes(1);
+    const request = (llm.stream.mock.calls[0] as unknown[])[0] as {
+      provider: string;
+      model: string;
+      reasoningEffort?: string;
+      system: string;
+      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+    };
+    expect(request.provider).toBe("deepseek");
+    expect(request.model).toBe("deepseek-v4");
+    expect(request.reasoningEffort).toBe("high");
+    expect(request.system).toContain("optimizer");
+    expect(request.messages[0].content[0].text).toContain("帮我");
+  });
+
+  it("rejects when the current model is not known", async () => {
+    const handler = await mountedOptimizeHandler({ stream: vi.fn() });
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/input/optimize", { text: "hello" }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
+  });
+
+  it("surfaces provider stream failures instead of reporting an empty optimization", async () => {
+    const llm = {
+      stream: vi.fn(() => (async function* () {
+        yield { type: "finish", reason: { kind: "error", failure: { code: "AUTH", message: "invalid api key" } } };
+      })())
+    };
+    const handler = await mountedOptimizeHandler(llm);
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/input/optimize", {
+      text: "optimize me",
+      provider: "deepseek",
+      model: "deepseek-v4"
+    }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("llm-failed");
+    expect(body.error.message).toContain("invalid api key");
+  });
+});
+
+describe("archive delete route", () => {
+  async function mountedArchiveHandler(options: MockOptions = {}) {
+    const { ctx } = mockCtx(options);
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    return register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+  }
+
+  it("deletes archived sessions and detaches them from workspaces", async () => {
+    const workspace = {
+      sessionIds: ["a"],
+      detachSession: vi.fn(async () => {})
+    };
+    const registry = {
+      archivedSessionIds: ["a", "b"],
+      list: vi.fn(() => [workspace])
+    };
+    const persistence = {
+      list: vi.fn(async () => [{ id: "a" }, { id: "b" }]),
+      locate: vi.fn((header: { id: string }) => ({ path: join("sessions", header.id, "session.jsonl.zstd") }))
+    };
+    const sessions = { get: vi.fn(() => undefined) };
+    const handler = await mountedArchiveHandler({ workspaceRegistry: registry, sessionPersistence: persistence, sessions });
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/archive/delete", { ids: ["a", "b"] }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(true);
+    expect(body.value).toEqual({ deleted: ["a", "b"], skipped: [], count: 2 });
+    expect(workspace.detachSession).toHaveBeenCalledWith("a");
+    expect(workspace.detachSession).not.toHaveBeenCalledWith("b");
+    expect(persistence.locate).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects ids that are not in the archive set", async () => {
+    const registry = { archivedSessionIds: ["a"], list: vi.fn(() => []) };
+    const handler = await mountedArchiveHandler({ workspaceRegistry: registry });
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/archive/delete", { ids: ["x"] }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("archive-not-found");
+  });
+
+  it("skips live (attached) archived sessions instead of deleting them", async () => {
+    const workspace = { sessionIds: ["a"], detachSession: vi.fn(async () => {}) };
+    const registry = { archivedSessionIds: ["a"], list: vi.fn(() => [workspace]) };
+    const persistence = {
+      list: vi.fn(async () => [{ id: "a" }]),
+      locate: vi.fn((header: { id: string }) => ({ path: join("sessions", header.id, "session.jsonl.zstd") }))
+    };
+    const sessions = { get: vi.fn(() => ({ id: "a" })) };
+    const handler = await mountedArchiveHandler({ workspaceRegistry: registry, sessionPersistence: persistence, sessions });
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/archive/delete", { ids: ["a"] }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(true);
+    expect(body.value).toEqual({ deleted: [], skipped: ["a"], count: 0 });
+    expect(workspace.detachSession).not.toHaveBeenCalled();
   });
 });
 

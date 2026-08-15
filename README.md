@@ -25,6 +25,7 @@
   - `customSkillDirs`：额外技能目录，每行一个；其中的技能会通过本插件注册的 provider 提供给所有会话
   - `treeRoot`：侧栏文件树根目录（留空 = 最近注册的工作区，其次进程工作目录）
 - **侧栏文件树**：在侧栏底部提供工作区文件浏览（`GET /ext/api/tree`），逐级展开目录，目录显示子项数、文件显示大小，每行可一键复制路径；支持全部收起与根目录配置（设置项 `treeRoot`；留空时默认最近注册的工作区，其次进程工作目录）；点击面板外部或按 Esc 自动收起；点击文件在弹窗编辑器中打开，可保存（仅限树根内既有文件，1 MiB 上限，二进制/NUL 防护）
+- **归档对话管理**：侧栏底部新增「归档」按钮，点击后列出当前已归档的所有会话（标题 / 工作区 / 更新时间）；支持勾选后批量**永久删除**已归档会话（删除前二次确认；仍在运行/加载中的会话自动跳过并在界面提示）。删除操作由宿主侧 `/ext/api/archive/delete` 完成：移除对应 JSONL 会话日志并清理工作区记账
 - **多终端**：对话页顶部「对话 / 轨迹 / 终端」页签（`conversation.view` slot）新增「终端」，可自主创建 **CMD** 或 **PowerShell** 终端并多开（上限可配置，默认 8 个）；左侧为活动终端（输出区 + 命令输入行 + 中断按钮），右侧列出全部终端（切换 / 关闭）；终端默认在工作区（文件树根）启动，输出通过轮询增量拉取，ANSI 转义序列在进入输出缓冲区前剥离（颜色/光标/窗口标题不会变成乱码）；基于 node-pty（缺失时回退普通管道），插件卸载时自动清理全部终端进程
 - **Git 面板**：对话页顶部页签新增「Git」（`conversation.view` slot，`ext-center.git`），VSCode「源代码管理」风格：
   - 顶部工具条：分支下拉切换、上游/领先/落后徽章、拉取（--ff-only）/ 推送 / 刷新
@@ -35,6 +36,7 @@
   - 状态自动刷新（间隔可配置，默认 5 秒）；仓库自动从文件树根向上查找 .git；所有操作由主机侧 git 子进程执行（GIT_TERMINAL_PROMPT=0，防挂起）
 - **MCP 服务器**：设置页新增「MCP」页签——添加自定义 MCP 服务器（stdio 本地命令 / streamable-http 远程 URL，支持参数、环境变量、工作目录、请求头、调用超时）；每个服务器写为 cordis.patch.yml 中的一行 `@deepseek-ai/dsh-mcp-client` 条目（id `ext-center.mcp.<名称>`），由配置监听器**热生效**；列表实时显示加载器状态（运行中/失败/已停用）并支持启用/停用/移除；服务器工具以 `mcp__<名称>__<工具名>` 提供给模型；手写的外部 MCP 行只读展示
 - **图片转述**：设置页新增「图片转述」配置——启用后，含图片的模型请求在进入文本模型前，先由用户指定的视觉模型（提供方 / 模型 / 提示词 / 单次上限 1-8，部署上限可配置）通过 `llm/stream` 瀑布包装转述成文字（仅替换本次请求中的图片块，会话记录原图不受影响）；转述失败自动降级为占位文本；主模型与转述模型同路由时原生图片直通；提供方下拉来自已注册的 LLM 路由（`/ext/api/state` 的 `llmProviders`），也可选择「自定义路由」并填写 OpenAI 兼容的 `chat/completions` API URL，由插件直接调用该端点转述图片
+- **优化输入**：会话输入框右下角（发送按钮与上下文按钮之间）新增「优化输入」按钮（星星图标）；点击后用当前会话所选模型对输入进行优化，优化结果直接回填到输入框，便于发送前润色 prompt
 - **工具参数自动修复**：通过 `tools/execute` 包装层修复模型偶发的参数抖动——`description` 缺失 / 为空 / 类型错误时自动补上中性占位符；`arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象，避免无谓的 `INVALID_ARGS` 报错
 
 </details>
@@ -89,7 +91,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 
 ## 部署配置（ext-center 行的 config 块）
 
-部署可调的行为全部收敛在 cordis.patch.yml 中 `ext-center` 行的 `config:` 块，用 schemastery 校验：每个字段自带默认值与合法范围，非法值会让插件**加载失败并给出明确报错**（宁可响亮失败，不静默漂移）。安全不变量（请求体 2 MiB、文件编辑器 1 MiB、终端单次写入 4096 字符、git 单批路径 500 条）保持固定、不可配置。
+部署可调的行为全部收敛在 cordis.patch.yml 中 `ext-center` 行的 `config:` 块，用 schemastery 校验：每个字段自带默认值与合法范围，非法值会让插件**加载失败并给出明确报错**（宁可响亮失败，不静默漂移）。安全不变量（请求体 2 MiB、文件编辑器 1 MiB、终端单次写入 4096 字符、git 单批路径 500 条、归档删除单批 500 条、输入优化单次文本 100 KiB）保持固定、不可配置。
 
 ```yaml
 - insert:
@@ -131,6 +133,8 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 2. 「技能」页：填写名称（小写 kebab-case）与内容 / URL / 路径，点安装；列表项可卸载
 3. 「插件」页：选择来源并填写 npm 包名 / tarball URL / 本机目录 / Git 仓库地址，点安装；已安装插件可启用、停用、卸载
 4. 「设置」页：修改本插件的偏好（保存到 settings.yaml 的 `ext-center` 节）
+5. 会话页：在输入框右下角（发送按钮与上下文按钮之间）点击星星图标「优化输入」，当前模型会把输入优化后回填到输入框
+6. 侧栏底部：点击「归档」查看已归档对话，勾选后点击「删除」批量永久删除（需二次确认；仍在运行/加载中的会话会自动跳过并提示）
 
 > 安全：所有变更类接口默认只允许本机（回环地址）调用；如需局域网管理，在「设置」页打开 `allowLan`。
 
@@ -139,6 +143,8 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | 端点 | 说明 |
 | --- | --- |
 | `GET /ext/api/state` | 全量状态：技能列表、插件安装记录、加载器条目、配置，以及 `limits`（各上限与客户端轮询间隔，见「部署配置」） |
+| `POST /ext/api/input/optimize` | `{text, provider, model, sessionId?, reasoningEffort?}` 用指定（当前会话所选）模型优化输入，返回 `{text}` 优化结果 |
+| `POST /ext/api/archive/delete` | `{ids:[...]}` 批量永久删除已归档会话（必须位于归档集合；仍在运行/加载中的会话跳过），返回 `{deleted, skipped, count}` |
 | `GET /ext/api/tree?path=...` | 文件树：列出根目录下的一级条目（含 type / size / mtime / children 计数、`truncated` 截断标记与 `maxEntries` 上限）；根目录解析：`treeRoot` 设置 → 最近注册的工作区 → 进程工作目录；相对路径可选 |
 | `GET /ext/api/tree/content?path=...` | 读取树根内一个文本文件（拒绝目录 / 超大 / 含 NUL 的二进制），供编辑器打开 |
 | `POST /ext/api/tree/write` | `{path, content}` 原子写回树根内既有文件（临时文件 + rename；同样有大小与二进制防护） |
@@ -184,6 +190,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 - 部署可调项（树/终端/git/mcp/vision 上限、修复开关与占位文案、客户端轮询间隔）是 ext-center 行 `config:` 块中经 schemastery 校验的 Config 字段，加载即校验，非法值响亮失败；安全不变量保持常量
 - 注册即效应：settings 命名空间经 `ctx.inject(["settings"], ...)` 等待服务就绪后注册（与 dsh-settings 的 `installSettingsSection` 同模式，插件先于 settings 启动也不丢命名空间）；技能 provider 的 `register()` 返回的 disposer 挂进 `ctx.effect`，插件卸载时一并释放
 - 通过 `tools/execute` waterfall（与 `dsh-tool-call-timeout-policy` 同机制）在参数校验前修复模型生成的工具参数；只修安全的 `description` 与可恢复的 JSON 字符串，绝不伪造 `code` / `command` 等内容字段；`toolRepair.enabled` 可整体关闭、`descriptionFill` 可换占位文案
+- 「优化输入」按钮挂在 `conversation.input.right`；因为该插槽的渲染位置在上下文按钮左侧，组件会把自己的真实 DOM 按钮插入到发送按钮之前（发送按钮与上下文按钮之间）。点击后客户端从 `modelDirectories` 读取当前会话所选 provider/model（缺失时回退到最近一条助手消息的 `requestConfig`），调用 `/ext/api/input/optimize`，宿主侧用 `ctx.llm.stream` 做一次性辅助模型调用并把优化结果回填输入框
 - 文件树根目录解析：`treeRoot` 设置 → `ctx.workspaceRegistry` 最近注册的工作区 → 进程 `cwd`；因此未配置时默认展示最近使用的工作区
 
 ## 目录结构
@@ -197,7 +204,7 @@ better-deepseek-harness/
 ├── tsconfig.build.json   # 构建：tsc 发射 src/ → lib/
 ├── src/                  # 源码
 │   ├── index.js          # 主机侧：settings 命名空间、/ext/api 路由、技能/插件生命周期、文件树读写、工具参数修复、图片转述、MCP
-│   ├── client.js         # 浏览器侧：设置页区块、终端/Git 页签、侧栏文件树（__ModuleLoader__ 工厂格式）
+│   ├── client.js         # 浏览器侧：设置页区块、终端/Git 页签、侧栏文件树、输入优化按钮（__ModuleLoader__ 工厂格式）
 │   └── tool-args.ts      # 模型工具参数修复纯函数（完整 TypeScript；构建后为 lib/tool-args.js）
 ├── tests/                # vitest 规格（tests/tool-args.spec.ts、tests/host-wiring.spec.ts）
 ├── docs/                 # docs/architecture.md（架构）、docs/development.md（开发指南）
