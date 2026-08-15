@@ -172,8 +172,8 @@
 克隆本仓库，然后运行仓库内的一键安装脚本：
 
 ```powershell
-git clone https://github.com/silencieuxzero/Better_Deepseek_Harkness.git
-cd Better_Deepseek_Harkness
+git clone https://github.com/silencieuxzero/Better_Deepseek_Harness.git
+cd Better_Deepseek_Harness
 .\install.ps1                # 默认装入 web profile；其它 profile：.\install.ps1 -Profile agents
 ```
 
@@ -181,10 +181,10 @@ cd Better_Deepseek_Harkness
 
 ### 方式二：手动安装（无需 git / pnpm / npm）
 
-把 `better-deepseek-harness` 整个目录复制到共享模块根（git clone 下来的目录名是 `Better_Deepseek_Harkness`，按实际目录名复制即可）：
+把 `better-deepseek-harness` 整个目录复制到共享模块根（git clone 下来的目录名是 `Better_Deepseek_Harness`，按实际目录名复制即可）：
 
 ```powershell
-Copy-Item -Recurse Better_Deepseek_Harkness "$HOME\.dsh\profiles\node_modules\better-deepseek-harness"
+Copy-Item -Recurse Better_Deepseek_Harness "$HOME\.dsh\profiles\node_modules\better-deepseek-harness"
 ```
 
 然后在 profile 的 `cordis.patch.yml`（例如 `~/.dsh/profiles/web/cordis.patch.yml`）追加：
@@ -208,7 +208,7 @@ dsh plugin --profile web add file:/path/to/better-deepseek-harness
 也可以直接从 Git 仓库安装（需要 git）：
 
 ```bash
-dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepseek_Harkness.git
+dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepseek_Harness.git
 ```
 
 本包在 package.json 的 `dsh.bundle.patch` 中声明的补丁文件（`cordis.patch.yml`）会插入同名（`ext-center`）行，与方式一、方式二按 id 去重、不冲突。

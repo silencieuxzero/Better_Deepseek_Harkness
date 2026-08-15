@@ -133,10 +133,10 @@
 - **HTTP API**：`/ext/api` 前缀，统一 `{ok: true, value}` / `{ok: false, error: {code, message}}` 响应；静态路由表统一处理回环检查、2 MiB 请求体上限与错误映射。
 - **一键安装**（`install.ps1`）与手动安装路径（`321fc9b`），以及经 `dsh.bundle.patch` 声明的官方 `dsh plugin` 流程。
 
-[Unreleased]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.6.0
-[0.5.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.5.0
-[0.4.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.4.0
-[0.3.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.3.0
-[0.2.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.2.0
-[0.1.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.1.0
+[Unreleased]: https://github.com/silencieuxzero/Better_Deepseek_Harness/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.6.0
+[0.5.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.5.0
+[0.4.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.4.0
+[0.3.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.3.0
+[0.2.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.2.0
+[0.1.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.1.0

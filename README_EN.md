@@ -173,8 +173,8 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
 Clone this repository, then run the one-click install script inside it:
 
 ```powershell
-git clone https://github.com/silencieuxzero/Better_Deepseek_Harkness.git
-cd Better_Deepseek_Harkness
+git clone https://github.com/silencieuxzero/Better_Deepseek_Harness.git
+cd Better_Deepseek_Harness
 .\install.ps1                # installs into the web profile by default; other profiles: .\install.ps1 -Profile agents
 ```
 
@@ -182,10 +182,10 @@ The script copies the package to the shared module root `~/.dsh/profiles/node_mo
 
 ### Method 2: Manual install (no git / pnpm / npm)
 
-Copy the whole `better-deepseek-harness` directory to the shared module root (the directory name of the git clone is `Better_Deepseek_Harkness` — copy it under whatever name you actually have):
+Copy the whole `better-deepseek-harness` directory to the shared module root (the directory name of the git clone is `Better_Deepseek_Harness` — copy it under whatever name you actually have):
 
 ```powershell
-Copy-Item -Recurse Better_Deepseek_Harkness "$HOME\.dsh\profiles\node_modules\better-deepseek-harness"
+Copy-Item -Recurse Better_Deepseek_Harness "$HOME\.dsh\profiles\node_modules\better-deepseek-harness"
 ```
 
 Then append to the profile's `cordis.patch.yml` (e.g. `~/.dsh/profiles/web/cordis.patch.yml`):
@@ -209,7 +209,7 @@ dsh plugin --profile web add file:/path/to/better-deepseek-harness
 You can also install directly from the Git repository (requires git):
 
 ```bash
-dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepseek_Harkness.git
+dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepseek_Harness.git
 ```
 
 The patch file declared in the package's `dsh.bundle.patch` (in `package.json`, i.e. `cordis.patch.yml`) inserts a row with the same id (`ext-center`), which is deduplicated by id against methods 1 and 2 — no conflict.

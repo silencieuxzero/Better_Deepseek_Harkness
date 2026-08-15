@@ -135,10 +135,10 @@ Initial release.
 - **HTTP API** under `/ext/api` with a unified `{ok: true, value}` / `{ok: false, error: {code, message}}` envelope; uniform route table with loopback checks, 2 MiB body cap, error mapping.
 - **One-click install** (`install.ps1`) and manual install path (`321fc9b`), plus the official `dsh plugin` flow via the declared `dsh.bundle.patch`.
 
-[Unreleased]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.6.0
-[0.5.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.5.0
-[0.4.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.4.0
-[0.3.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.3.0
-[0.2.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.2.0
-[0.1.0]: https://github.com/silencieuxzero/Better_Deepseek_Harkness/releases/tag/v0.1.0
+[Unreleased]: https://github.com/silencieuxzero/Better_Deepseek_Harness/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.6.0
+[0.5.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.5.0
+[0.4.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.4.0
+[0.3.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.3.0
+[0.2.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.2.0
+[0.1.0]: https://github.com/silencieuxzero/Better_Deepseek_Harness/releases/tag/v0.1.0
