@@ -273,6 +273,42 @@ describe("llm/stream image transcription wrapper", () => {
     }
   });
 
+  it("falls back to the reasoning field when the custom endpoint returns empty content", async () => {
+    // Reasoning models (e.g. step-3.7-flash) can answer entirely in
+    // message.reasoning while content stays "" — the transcription must use
+    // that text instead of reporting failure.
+    const llm = {
+      stream: vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]))
+    };
+    const readImage = vi.fn(async () => ({ ref: { mediaType: "image/png" }, data: new Uint8Array([1, 2, 3]) }));
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { role: "assistant", content: "", reasoning: "这是一张网页截图，主题是悼湖茶馆。顶部导航栏有首页、归档、关于。" } }] })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const listener = captureListener({
+        stored: { vision: { enabled: true, provider: "custom", model: "custom-vlm", apiUrl: "http://vision.test/v1/chat/completions" } },
+        llm,
+        attachments: { readImage }
+      });
+      const next = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+      const result = listener(
+        { provider: "main", model: "m", messages: [{ role: "user", content: [{ type: "image", attachment: { attachmentId: "a1" } }] }] },
+        next
+      );
+      for await (const _chunk of result as AsyncIterable<unknown>) void _chunk;
+      const rewritten = (llm.stream as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+      };
+      const text = rewritten.messages[0].content.find((b) => b.type === "text")?.text ?? "";
+      expect(text).toContain("悼湖茶馆");
+      expect(text).toContain("顶部导航栏");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("forwards next() untouched when transcription is disabled or the route matches", async () => {
     const listener = captureListener({}); // stored = {} -> vision disabled
     const downstream = streamOf([{ type: "finish", reason: { kind: "ok" } }]);

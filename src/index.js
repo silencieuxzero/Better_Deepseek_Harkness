@@ -1787,17 +1787,21 @@ async function customVisionText(ctx, vision, imageBlock, maxTokens, signal) {
     throw new Error(`custom vision endpoint returned HTTP ${res.status}${detail ? ": " + detail : ""}`);
   }
   const json = await res.json().catch(() => null);
-  const content = json?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || content.trim() === "") {
-    // Surface the endpoint's own error detail (e.g. a quota or format error
-    // carried in a 200 body) so the failure is diagnosable from the transcript.
-    let detail = "";
-    if (json && typeof json === "object") {
-      detail = typeof json.error?.message === "string" ? json.error.message : JSON.stringify(json).slice(0, 300);
-    }
-    throw new Error("custom vision endpoint returned no text content" + (detail ? ": " + detail : ""));
+  const message = json?.choices?.[0]?.message;
+  const content = typeof message?.content === "string" ? message.content.trim() : "";
+  if (content !== "") return content;
+  // Some reasoning models answer entirely in the thinking field while
+  // `content` stays empty — for transcription the thinking text is the
+  // image description, so fall back to it before declaring failure.
+  const reasoning = typeof message?.reasoning === "string" ? message.reasoning : typeof message?.reasoning_content === "string" ? message.reasoning_content : "";
+  if (reasoning.trim() !== "") return reasoning.trim();
+  // Surface the endpoint's own error detail (e.g. a quota or format error
+  // carried in a 200 body) so the failure is diagnosable from the transcript.
+  let detail = "";
+  if (json && typeof json === "object") {
+    detail = typeof json.error?.message === "string" ? json.error.message : JSON.stringify(json).slice(0, 300);
   }
-  return content.trim();
+  throw new Error("custom vision endpoint returned no text content" + (detail ? ": " + detail : ""));
 }
 
 /** One transcription call: the vision prompt plus a single image block. */
