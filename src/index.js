@@ -863,7 +863,7 @@ async function materializePackage(source, stagingDir) {
       // cpSync copies a source directory *into* an existing destination, so
       // remove the empty staging dir first: cpSync then recreates it with the
       // package's files at its root (package.json must sit at stagingDir/package.json).
-      rmSync(stagingDir, { recursive: true, force: true });
+      rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
       cpSync(src, stagingDir, { recursive: true });
       break;
     }
@@ -893,7 +893,7 @@ async function materializePackage(source, stagingDir) {
   const wrapped = join(stagingDir, "package");
   if (existsSync(join(wrapped, "package.json"))) {
     for (const entry of readdirSync(wrapped)) renameSync(join(wrapped, entry), join(stagingDir, entry));
-    rmSync(wrapped, { recursive: true, force: true });
+    rmSync(wrapped, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
   return readPackageManifest(stagingDir);
 }
@@ -3225,7 +3225,7 @@ const routes = {
       let removed = 0;
       for (const target of [join(root, name), join(root, name + ".md")]) {
         if (existsSync(target)) {
-          rmSync(target, { recursive: true, force: true });
+          rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
           removed += 1;
         }
       }
@@ -3243,7 +3243,9 @@ const routes = {
       if (!source || typeof source !== "object" || typeof source.kind !== "string") throw err("bad-request", "source.kind is required");
       const state = loadState(layout);
       const stagingDir = join(layout.profileDir, ".dsh-ext-center-staging");
-      rmSync(stagingDir, { recursive: true, force: true });
+      // Windows can transiently lock a directory (AV scans, watchers) — retry
+      // the reset instead of failing the install on a short-lived handle.
+      rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
       let manifest;
       let target;
       let pkgName;
@@ -3256,11 +3258,18 @@ const routes = {
         freshInstall = !Object.hasOwn(state, pkgName);
         if (existsSync(target) && freshInstall) throw err("already-exists", `${target} already exists on disk — remove it first or uninstall the tracked package`);
         mkdirSync(dirname(target), { recursive: true });
-        rmSync(target, { recursive: true, force: true });
+        rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
         // move the staged package into place BEFORE the finally cleans staging
         cpSync(stagingDir, target, { recursive: true });
       } finally {
-        rmSync(stagingDir, { recursive: true, force: true });
+        // Housekeeping only: a lingering staging dir is cleared by the next
+        // install's reset, so a persistent Windows lock must not fail an
+        // install that has already moved the package into place.
+        try {
+          rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        } catch (error) {
+          ctx.logger?.warn?.("better-deepseek-harness: failed to clean staging dir %s: %s", stagingDir, error?.message ?? error);
+        }
       }
 
       // Bundle patch rows (if the package declares dsh.bundle); a package
