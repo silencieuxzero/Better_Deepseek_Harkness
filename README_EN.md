@@ -93,6 +93,16 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
   - `github_releases`: recent releases (tag / name / date / release notes, notes truncated to 4000 characters)
 - Safety and graceful degradation: without a token calls are unauthenticated (60 requests/hour/IP, fixed `x-github-api-version: 2022-11-28` header); 401 (invalid token) / 403 (rate limit) / 404 errors map to readable messages turned into tool error results by the agent loop — **normal replies are never blocked**; when the master switch is off or a call fails, the model answers from its own knowledge; switch changes take effect live (settings `watch` registers / deregisters — no restart)
 
+**Windows notifications**: the "Notifications" tab on the settings page (`ext-center.notify`, Windows only)
+
+- Native Windows toasts (nothing to install) that pop even while the app is in the background or unfocused:
+  - **Notify when asking**: a toast pops when the model calls `ask_user_question` and waits for your input, with a question summary (truncated)
+  - **Notify when a flow ends**: a toast pops when a root-agent flow finishes (running → idle), with the outcome (completed / failed + error summary) and the run duration; sub-agent flows and internal maintenance phases never notify
+- Options (all toggleable on the settings page, stored in the `ext-center.notify` section of settings.yaml):
+  - **Enable Windows notifications**: master switch (default on)
+  - **Notify when asking** / **Notify when a flow ends**: two sub-switches
+- Implementation: when the host runs under Electron, the Electron main-process `Notification` is used; otherwise a WinRT `ToastText02` toast is shown through `powershell.exe -EncodedCommand` (single-quoted literal escaping + `CreateTextNode` injection — no injection surface; 15 s spawn timeout backstop). Notification failures only log — they **never block the agent loop or tool dispatch**; non-Windows platforms no-op automatically
+
 ### Conversation & Sidebar
 
 **Sidebar file tree**: the "File Tree" button at the bottom of the sidebar
@@ -277,9 +287,10 @@ All of the above fields may be omitted (omitting means the default is used); the
 4. "Settings" tab: change this plugin's preferences (saved to the `ext-center` section of `settings.yaml`)
 5. "Tavily" tab: enter your API Key and turn on "Enable search"; in conversations the model will automatically search for real-time information and cite sources
 6. "GitHub" tab: nothing to configure for public repositories; fill in a token and turn on "Enable GitHub tools" for higher rate limits or private repositories — in conversations the model can query repository metadata, list directories, read files, search repositories and list releases
-7. Conversation page: click the star icon "Optimize Input" at the bottom right of the input box (between the send button and the context button); the current model optimizes the input and writes it back into the input box
-8. Bottom of the sidebar: click "Archive" to view archived conversations, check them and click "Delete" to batch **permanently** delete (confirmation required; sessions still running / loading are automatically skipped and reported)
-9. Rescue mode: enters automatically after a failed Harness boot — once the minimal boot succeeds, a dialog lists the disabled third-party plugins; select some and click "Enable selected & reload", or use "Restore all" / "Keep disabled". You can also trigger it manually with "Enter rescue mode" on the Plugins tab
+7. "Notifications" tab (Windows): toggle "Notify when asking" and "Notify when a flow ends" as you like — a system toast pops when the model waits for your input or a flow finishes
+8. Conversation page: click the star icon "Optimize Input" at the bottom right of the input box (between the send button and the context button); the current model optimizes the input and writes it back into the input box
+9. Bottom of the sidebar: click "Archive" to view archived conversations, check them and click "Delete" to batch **permanently** delete (confirmation required; sessions still running / loading are automatically skipped and reported)
+10. Rescue mode: enters automatically after a failed Harness boot — once the minimal boot succeeds, a dialog lists the disabled third-party plugins; select some and click "Enable selected & reload", or use "Restore all" / "Keep disabled". You can also trigger it manually with "Enter rescue mode" on the Plugins tab
 
 > Security: all mutation endpoints and read endpoints that expose local paths/output (`/ext/api/state`, the file tree, terminal output, Git reads, the MCP list) are loopback-only by default; to manage over LAN, turn on `allowLan` on the Settings page. Also note: installing from a Git source means running that repository's code — installation/loading and the automatic build (`npm install` executes npm lifecycle scripts declared by that repository) all run its contents, so only install repositories you trust.
 
@@ -292,7 +303,7 @@ All of the above fields may be omitted (omitting means the default is used); the
 | Endpoint | Description |
 | --- | --- |
 | `GET /ext/api/state` | Full state: skill list, plugin install records, loader entries, configuration, plus `limits` (the caps and client poll intervals, see "Deployment Configuration") |
-| `POST /ext/api/config` | Writes the `ext-center` settings namespace (`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot` / `vision` / `tavily` / `github`) |
+| `POST /ext/api/config` | Writes the `ext-center` settings namespace (`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot` / `vision` / `tavily` / `github` / `notify`) |
 
 ### File Tree
 

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { apply, inject, NAME, SETTINGS_NS, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks } from "../src/index.js";
+import { apply, inject, NAME, SETTINGS_NS, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks, __setNotifyHostHooks } from "../src/index.js";
 
 /**
  * A minimal cordis ctx double for apply(). `baseUrl` must be a real file URL
@@ -36,6 +36,8 @@ interface MockOptions {
   noWebServer?: boolean;
   /** value returned for ctx.get("commands") (defaults to undefined — no command registry). */
   commands?: { register: ReturnType<typeof vi.fn> };
+  /** value returned for ctx.get("agents") (defaults to undefined — no agent registry). */
+  agents?: { roots: () => Array<unknown>; get?: (id: string) => unknown } | undefined;
   /** when true, ctx.inject stores the callback instead of running it now. */
   deferInject?: boolean;
   /** when true, ctx.get("settings") throws like a missing cordis service. */
@@ -100,6 +102,7 @@ function mockCtx(options: MockOptions = {}) {
       if (name === "sessions") return options.sessions;
       if (name === "webServer") return options.noWebServer ? undefined : webServer;
       if (name === "commands") return options.commands;
+      if (name === "agents") return options.agents;
       return undefined;
     }),
     inject: vi.fn((_names: string[], callback: (child: unknown) => void) => {
@@ -1601,6 +1604,165 @@ describe("config route (tavily)", () => {
   });
 });
 
+describe("windows notifications", () => {
+  /** A fake child process whose exit fires immediately (the notify promise resolves). */
+  function fakeChild() {
+    return {
+      once: vi.fn((event: string, callback: () => void) => {
+        if (event === "exit") callback();
+      }),
+      kill: vi.fn()
+    };
+  }
+
+  /** Capture the LAST registered listener for one event from a fresh apply(). */
+  function listenerFor(event: string, options: MockOptions = {}) {
+    const { ctx, disposers } = mockCtx(options);
+    apply(ctx, {});
+    const calls = (ctx.on as ReturnType<typeof vi.fn>).mock.calls.filter((args: unknown[]) => args[0] === event);
+    const call = calls[calls.length - 1];
+    if (!call) throw new Error(`${event} listener was not registered`);
+    return { listener: call[1] as (...args: unknown[]) => unknown, ctx, disposers };
+  }
+
+  /** Decode the -EncodedCommand payload of a notify spawn call. */
+  function encodedScriptOf(spawnImpl: ReturnType<typeof vi.fn>): string {
+    const args = spawnImpl.mock.calls[0][1] as string[];
+    const encoded = args[args.indexOf("-EncodedCommand") + 1] as string;
+    return Buffer.from(encoded, "base64").toString("utf16le");
+  }
+
+  it("registers the tools/execute, agent/status, and agent/error listeners", () => {
+    const { ctx } = mockCtx({});
+    apply(ctx, {});
+    const events = (ctx.on as ReturnType<typeof vi.fn>).mock.calls.map((args: unknown[]) => args[0]);
+    expect(events.filter((event) => event === "tools/execute")).toHaveLength(2); // repair + notify
+    expect(events).toContain("agent/status");
+    expect(events).toContain("agent/error");
+  });
+
+  it("fires a question toast when ask_user_question is dispatched", async () => {
+    __setNotifyHostHooks({ platform: "win32", electronAvailable: false });
+    const spawnImpl = vi.fn((_file: string, _args: string[], _options?: unknown) => fakeChild());
+    __setNotifyHostHooks({ spawnImpl });
+    try {
+      const { listener } = listenerFor("tools/execute");
+      const next = vi.fn(() => "next-result");
+      const result = listener({ name: "ask_user_question", arguments: { questions: [{ question: "继续吗？" }] } }, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(result).toBe("next-result");
+      // the toast is fire-and-forget: give the spawn promise a tick
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnImpl).toHaveBeenCalledTimes(1);
+      expect(spawnImpl.mock.calls[0][0]).toBe("powershell.exe");
+      const script = encodedScriptOf(spawnImpl);
+      expect(script).toContain("需要你的输入");
+      expect(script).toContain("继续吗？");
+    } finally {
+      __setNotifyHostHooks({ platform: undefined, spawnImpl: null, electronAvailable: null });
+    }
+  });
+
+  it("does not toast for other tools", async () => {
+    __setNotifyHostHooks({ platform: "win32", electronAvailable: false });
+    const spawnImpl = vi.fn((_file: string, _args: string[], _options?: unknown) => fakeChild());
+    __setNotifyHostHooks({ spawnImpl });
+    try {
+      const { listener } = listenerFor("tools/execute");
+      listener({ name: "web_search", arguments: { query: "q" } }, vi.fn());
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnImpl).not.toHaveBeenCalled();
+    } finally {
+      __setNotifyHostHooks({ platform: undefined, spawnImpl: null, electronAvailable: null });
+    }
+  });
+
+  it("does not toast when notify is disabled or the platform is not win32", async () => {
+    // disabled by settings
+    {
+      __setNotifyHostHooks({ platform: "win32", electronAvailable: false });
+      const spawnImpl = vi.fn((_file: string, _args: string[], _options?: unknown) => fakeChild());
+      __setNotifyHostHooks({ spawnImpl });
+      const { listener } = listenerFor("tools/execute", { stored: { notify: { enabled: false } } });
+      listener({ name: "ask_user_question", arguments: { questions: [{ question: "q" }] } }, vi.fn());
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnImpl).not.toHaveBeenCalled();
+    }
+    // non-Windows platform
+    {
+      __setNotifyHostHooks({ platform: "linux", electronAvailable: false });
+      const spawnImpl = vi.fn((_file: string, _args: string[], _options?: unknown) => fakeChild());
+      __setNotifyHostHooks({ spawnImpl });
+      const { listener } = listenerFor("tools/execute");
+      listener({ name: "ask_user_question", arguments: { questions: [{ question: "q" }] } }, vi.fn());
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnImpl).not.toHaveBeenCalled();
+    }
+    __setNotifyHostHooks({ platform: undefined, spawnImpl: null, electronAvailable: null });
+  });
+
+  it("fires one done toast per root-agent running → idle flow", async () => {
+    __setNotifyHostHooks({ platform: "win32", electronAvailable: false });
+    const spawnImpl = vi.fn((_file: string, _args: string[], _options?: unknown) => fakeChild());
+    __setNotifyHostHooks({ spawnImpl });
+    try {
+      const { listener } = listenerFor("agent/status");
+      listener({ agent: { id: "a1", phase: { kind: "running" } }, status: "running" });
+      listener({ agent: { id: "a1" }, status: "idle" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnImpl).toHaveBeenCalledTimes(1);
+      const script = encodedScriptOf(spawnImpl);
+      expect(script).toContain("流程结束");
+      expect(script).toContain("已完成");
+    } finally {
+      __setNotifyHostHooks({ platform: undefined, spawnImpl: null, electronAvailable: null });
+    }
+  });
+
+  it("reports failures in the done toast", async () => {
+    __setNotifyHostHooks({ platform: "win32", electronAvailable: false });
+    const spawnImpl = vi.fn((_file: string, _args: string[], _options?: unknown) => fakeChild());
+    __setNotifyHostHooks({ spawnImpl });
+    try {
+      const { ctx, disposers } = mockCtx({});
+      apply(ctx, {});
+      const calls = (ctx.on as ReturnType<typeof vi.fn>).mock.calls;
+      const status = calls.find((args: unknown[]) => args[0] === "agent/status")?.[1] as (...args: unknown[]) => void;
+      const error = calls.find((args: unknown[]) => args[0] === "agent/error")?.[1] as (...args: unknown[]) => void;
+      status({ agent: { id: "a1", phase: { kind: "running" } }, status: "running" });
+      error({ agent: { id: "a1" }, error: new Error("boom") });
+      status({ agent: { id: "a1" }, status: "idle" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnImpl).toHaveBeenCalledTimes(1);
+      expect(encodedScriptOf(spawnImpl)).toContain("出错：boom");
+      for (const dispose of disposers) dispose();
+    } finally {
+      __setNotifyHostHooks({ platform: undefined, spawnImpl: null, electronAvailable: null });
+    }
+  });
+
+  it("skips sub-agent flows and maintenance phases", async () => {
+    __setNotifyHostHooks({ platform: "win32", electronAvailable: false });
+    const spawnImpl = vi.fn((_file: string, _args: string[], _options?: unknown) => fakeChild());
+    __setNotifyHostHooks({ spawnImpl });
+    try {
+      const root = { id: "root" };
+      const sub = { id: "sub" };
+      const { listener } = listenerFor("agent/status", { agents: { roots: () => [root] } });
+      // sub-agent running → idle: no toast
+      listener({ agent: sub, status: "running" });
+      listener({ agent: sub, status: "idle" });
+      // maintenance phase: no toast
+      listener({ agent: { id: "a2", phase: { kind: "maintenance" } }, status: "running" });
+      listener({ agent: { id: "a2" }, status: "idle" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnImpl).not.toHaveBeenCalled();
+    } finally {
+      __setNotifyHostHooks({ platform: undefined, spawnImpl: null, electronAvailable: null });
+    }
+  });
+});
+
 describe("config route (github)", () => {
   async function mountedConfigHandler(stored: Record<string, unknown> = {}) {
     const { ctx, settings } = mockCtx({ stored });
@@ -1676,6 +1838,54 @@ describe("config route (github)", () => {
     const github = body.value.config.github as Record<string, unknown>;
     expect(github).not.toHaveProperty("token");
     expect(github.tokenConfigured).toBe(true);
+  });
+});
+
+describe("config route (notify)", () => {
+  async function mountedConfigHandler(stored: Record<string, unknown> = {}) {
+    const { ctx, settings } = mockCtx({ stored });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    return {
+      settings,
+      handler: register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>
+    };
+  }
+
+  it("stores a validated notify patch", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { notify: { enabled: false, onQuestion: false, onDone: true } }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{
+      op: "set",
+      path: ["notify"],
+      value: { enabled: false, onQuestion: false, onDone: true }
+    }]);
+  });
+
+  it("rejects non-boolean notify fields", async () => {
+    const { handler } = await mountedConfigHandler();
+    for (const patch of [
+      { notify: { enabled: "yes" } },
+      { notify: { onQuestion: 1 } },
+      { notify: { onDone: null } },
+      { notify: "on" }
+    ]) {
+      const res = fakeRes();
+      await handler(fakeReqWithBody("POST", "/ext/api/config", patch), res);
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("bad-request");
+    }
+  });
+
+  it("resets the whole notify section", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { reset: ["notify"] }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{ op: "unset", path: ["notify"] }]);
   });
 });
 

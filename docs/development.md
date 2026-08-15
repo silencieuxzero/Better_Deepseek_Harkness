@@ -11,7 +11,7 @@ better-deepseek-harness/
 ├── install.ps1           # 一键安装脚本（免构建，复制仓库内容，跳过 .git 与 node_modules）
 ├── tsconfig.json         # 类型检查（strict，noEmit）
 ├── tsconfig.build.json   # 构建（tsc 发射到 lib/）
-├── src/                  # 源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts / ansi.ts / tavily.ts / github.ts / terminal-buffer.ts / rescue.ts / compat.ts（纯逻辑）
+├── src/                  # 源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts / ansi.ts / tavily.ts / github.ts / notify.ts / terminal-buffer.ts / rescue.ts / compat.ts（纯逻辑）
 ├── tests/                # vitest 规格（*.spec.ts）
 ├── docs/                 # 架构与开发文档
 ├── lib/                  # 构建产物（提交进 git，安装免构建）
@@ -36,7 +36,7 @@ npm run check        # typecheck + test
 
 ## 构建
 
-`npm run build` 用 tsc（`allowJs` 关闭）把 `src/*.ts` 发射到 `lib/*.js`（`ansi`、`tavily`、`github`、`terminal-buffer`、`tool-args`、`rescue`、`compat`），再由 `scripts/copy-js.mjs` 把 `index.js`、`client.js` 原样复制到 `lib/`。产物与手写时代的旧文件保持同构——`package.json` 的 `main`/`exports` 与 `dsh.client.inject` 指向不变，运行时行为不变。
+`npm run build` 用 tsc（`allowJs` 关闭）把 `src/*.ts` 发射到 `lib/*.js`（`ansi`、`tavily`、`github`、`notify`、`terminal-buffer`、`tool-args`、`rescue`、`compat`），再由 `scripts/copy-js.mjs` 把 `index.js`、`client.js` 原样复制到 `lib/`。产物与手写时代的旧文件保持同构——`package.json` 的 `main`/`exports` 与 `dsh.client.inject` 指向不变，运行时行为不变。
 
 调试急救模式时可对真实 profile 做只读预演（不写盘）：
 
@@ -51,6 +51,7 @@ node scripts/rescue-dry-run.mjs ~/.dsh/profiles/web
 - `tests/tool-args.spec.ts`：纯逻辑（JSON 恢复、description 修补）的行为规格，是回归的主战场。
 - `tests/ansi.spec.ts`：终端 ANSI 剥离（CSI/OSC、跨 chunk 的未完成序列）的行为规格。
 - `tests/github.spec.ts`：GitHub 工具纯逻辑（设置解析、Token 校验、owner/repo 与路径解析、URL 构建、contents/搜索/发布响应映射、错误映射、结果格式化）的行为规格。
+- `tests/notify.spec.ts`：Windows 通知纯逻辑（设置解析、平台门、文本截断与转义、文案构建、Toast 脚本构建、agent 流程追踪状态机）的行为规格。
 - `tests/rescue.spec.ts`：急救模式纯逻辑（状态机、第三方分类、重复 id 检测、禁用/恢复计划、状态文件清洗）的行为规格。
 - `tests/compat.spec.ts`：dsh-web-ui 兼容决策纯逻辑（家族注册表、按 id/包名检测、只统计 ACTIVE 条目、界面让位映射）的行为规格；`tests/compat-client.spec.ts` 守卫浏览器侧内联同表与 `src/compat.ts` 不漂移。
 - `tests/host-wiring.spec.ts`：用最小 ctx 双（mock）跑 `apply()`，断言接线（路由、设置命名空间、技能 provider、两个瀑布）与路由调度器（200/403/404/405、错误信封）；不触真实文件系统与网络。另含安装流水线内部件的规格：`packageEntryPoints` / `packageEntryExists` / `ensureBuiltPackage`（构建回退的决策与报错，子进程用注入的假 runner，不跑真实 npm）。急救模式的宿主接线（看门狗、`/ext/api/rescue/*` 路由、重启/桌面探测钩子 `__setRescueHostHooks`）用临时 profile 目录夹具覆盖。

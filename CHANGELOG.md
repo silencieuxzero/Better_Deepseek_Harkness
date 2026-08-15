@@ -10,6 +10,12 @@ For the Chinese version, see [CHANGELOG_ZH.md](CHANGELOG_ZH.md).
 
 ### Added
 
+- **Windows notifications** (Windows only): native system toasts that pop even while the app is in the background or unfocused, with a new "Notifications" tab on the settings page (`ext-center.notify`):
+  - **Notify when asking**: a toast pops when the model calls `ask_user_question` and waits for input, with a question summary (truncated);
+  - **Notify when a flow ends**: a toast pops when a root-agent flow finishes (running → idle), with the outcome (completed / failed + error summary) and the run duration; sub-agent flows and internal maintenance phases never notify;
+  - Options: `enabled` (master switch, default on) / `onQuestion` / `onDone`, stored in the `ext-center.notify` section of settings.yaml;
+  - Implementation: when the host runs under Electron, the Electron main-process `Notification` is used; otherwise a WinRT `ToastText02` toast is shown through `powershell.exe -EncodedCommand` (single-quoted literal escaping + `CreateTextNode` injection, 15 s spawn timeout backstop). Notification failures only log — they never block the agent loop or tool dispatch; non-Windows platforms no-op automatically.
+  - Pure logic in `src/notify.ts` (settings resolution, platform gate, text capping & escaping, message building, toast-script building, agent-flow tracker), with host side effects injected through `__setNotifyHostHooks`; covered by `tests/notify.spec.ts` and new `tests/host-wiring.spec.ts` cases.
 - **GitHub repository access** through the GitHub REST API, with a new "GitHub" tab on the settings page (`ext-center.github`):
   - five model-facing tools registered with a system-prompt hint: `github_repo` (metadata: description / stars / forks / default branch / language / license / topics), `github_tree` (directory listing with sizes; a file path answers with a pointer to `github_file`), `github_file` (content: base64-decoded, capped at 64 KiB, binary-flagged; a directory path answers with a pointer to `github_tree`), `github_search` (repository search with GitHub query syntax, 1–10 results), `github_releases` (recent releases; notes truncated to 4000 characters);
   - **optional token**: public repositories work unauthenticated (60 requests/hour/IP); the settings password field is write-only (format-validated, `ghp_` / `github_pat_` etc.; `/ext/api/state` only reports the `tokenConfigured` boolean); 401 / 403 (rate limit) / 404 errors map to readable messages;

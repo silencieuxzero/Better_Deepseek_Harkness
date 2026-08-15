@@ -94,6 +94,20 @@ import {
   validateGithubToken
 } from "./github.js";
 import {
+  NOTIFY_BODY_CAP,
+  NOTIFY_DEFAULTS,
+  NOTIFY_SPAWN_TIMEOUT_MS,
+  NOTIFY_TITLE_CAP,
+  buildDoneBody,
+  buildQuestionBody,
+  buildToastScript,
+  capText,
+  createFlowTracker,
+  notifyTitleFor,
+  platformIsWindows,
+  resolveNotifySettings
+} from "./notify.js";
+import {
   RESCUE_FILE,
   RESCUE_STATE_VERSION,
   buildRescuePlan,
@@ -270,7 +284,8 @@ const DEFAULTS = Object.freeze({
     maxTokens: 1024
   }),
   tavily: TAVILY_DEFAULTS,
-  github: GITHUB_DEFAULTS
+  github: GITHUB_DEFAULTS,
+  notify: NOTIFY_DEFAULTS
 });
 
 /* ─────────────────────────── plugin config ─────────────────────────── */
@@ -403,7 +418,12 @@ const SettingsSchema = z.object({
     enabled: z.boolean().default(DEFAULTS.github.enabled),
     token: z.string().default(DEFAULTS.github.token),
     timeoutMs: z.number().min(GITHUB_TIMEOUT_MIN).max(GITHUB_TIMEOUT_MAX).default(DEFAULTS.github.timeoutMs)
-  }).default({ ...DEFAULTS.github })
+  }).default({ ...DEFAULTS.github }),
+  notify: z.object({
+    enabled: z.boolean().default(DEFAULTS.notify.enabled),
+    onQuestion: z.boolean().default(DEFAULTS.notify.onQuestion),
+    onDone: z.boolean().default(DEFAULTS.notify.onDone)
+  }).default({ ...DEFAULTS.notify })
 });
 
 /* ─────────────────────────── errors ─────────────────────────── */
@@ -466,7 +486,10 @@ function readConfig(ctx) {
   const github = storedSection.github && typeof storedSection.github === "object" && !Array.isArray(storedSection.github)
     ? { ...DEFAULTS.github, ...storedSection.github }
     : { ...DEFAULTS.github };
-  return { ...DEFAULTS, ...storedSection, vision, tavily, github };
+  const notify = storedSection.notify && typeof storedSection.notify === "object" && !Array.isArray(storedSection.notify)
+    ? { ...DEFAULTS.notify, ...storedSection.notify }
+    : { ...DEFAULTS.notify };
+  return { ...DEFAULTS, ...storedSection, vision, tavily, github, notify };
 }
 
 /** The skill install root: the `skillRoot` setting, or the default user skill directory. */
@@ -3106,6 +3129,191 @@ function registerGithubTools(ctx, configOf) {
   return sync;
 }
 
+/* ─────────────────────────── windows notifications ─────────────────────────── */
+
+/**
+ * Injectable seams for tests: platform, spawn, and Electron availability.
+ * `electronAvailable` of null probes `process.versions.electron` at call time.
+ */
+const notifyHostHooks = { platform: process.platform, spawnImpl: null, electronAvailable: null };
+
+/**
+ * Test-only hook (like __setRescueHostHooks): override the host side effects
+ * the notifier performs. `platform` replaces process.platform ("win32" gates
+ * toasts); `spawnImpl` replaces child_process.spawn (signature-compatible);
+ * `electronAvailable` forces the Electron path when true and disables it when
+ * false (null = probe process.versions.electron at call time).
+ */
+function __setNotifyHostHooks(hooks) {
+  if (hooks === void 0 || typeof hooks !== "object" || hooks === null) return;
+  if ("platform" in hooks) notifyHostHooks.platform = hooks.platform;
+  if ("spawnImpl" in hooks) notifyHostHooks.spawnImpl = hooks.spawnImpl;
+  if ("electronAvailable" in hooks) notifyHostHooks.electronAvailable = hooks.electronAvailable;
+}
+
+/**
+ * Fire one Windows toast (fire-and-forget, never awaited by callers). The
+ * LIVE notify settings gate it; non-Windows hosts no-op. Prefers the Electron
+ * main-process `Notification` when the host runs under Electron (the desktop
+ * host), and falls back to a PowerShell WinRT toast (Windows 10+ ToastText02)
+ * otherwise. The PowerShell spawn is bounded by NOTIFY_SPAWN_TIMEOUT_MS so a
+ * hung shell can never linger.
+ *
+ * @param ctx - plugin context (for logging only).
+ * @param configOf - live settings reader.
+ * @param title - the toast title (capped here).
+ * @param body - the toast body (capped here).
+ */
+async function fireWindowsNotification(ctx, configOf, title, body) {
+  let settings;
+  try {
+    settings = resolveNotifySettings(configOf().notify);
+  } catch {
+    return; // unreadable settings — never fail the caller
+  }
+  if (!settings.enabled) return;
+  if (!platformIsWindows(String(notifyHostHooks.platform))) return;
+  const t = capText(title, NOTIFY_TITLE_CAP);
+  const b = capText(body, NOTIFY_BODY_CAP);
+  if (notifyHostHooks.electronAvailable ?? (typeof process !== "undefined" && process.versions?.electron !== void 0)) {
+    try {
+      const electron = createRequire(import.meta.url)("electron");
+      if (electron && typeof electron.Notification === "function") {
+        const notification = new electron.Notification({ title: t, body: b });
+        notification.show();
+        return;
+      }
+    } catch (error) {
+      ctx.logger?.warn?.("better-deepseek-harness: Electron notification failed, falling back to PowerShell: %s", error?.message ?? error);
+    }
+  }
+  const script = buildToastScript(t, b);
+  const spawnImpl = notifyHostHooks.spawnImpl ?? spawn;
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  await new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnImpl("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded], {
+        windowsHide: true,
+        stdio: "ignore"
+      });
+    } catch (error) {
+      ctx.logger?.warn?.("better-deepseek-harness: notification spawn failed: %s", error?.message ?? String(error));
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* already gone */ }
+      resolve();
+    }, NOTIFY_SPAWN_TIMEOUT_MS);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      ctx.logger?.warn?.("better-deepseek-harness: notification spawn error: %s", error?.message ?? String(error));
+      resolve();
+    });
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/** Fire one toast without blocking the caller; failures only log. */
+function notifyFire(ctx, configOf, kind, body) {
+  void fireWindowsNotification(ctx, configOf, notifyTitleFor(kind), body).catch((error) => {
+    ctx.logger?.warn?.("better-deepseek-harness: notification failed: %s", error?.message ?? String(error));
+  });
+}
+
+/**
+ * Register the Windows notification listeners:
+ *   - a tools/execute observer fires a toast when the model calls
+ *     `ask_user_question` (the harness is waiting for the user);
+ *   - agent/status + agent/error observers fire one toast per ended ROOT
+ *     agent flow (running → idle), carrying the outcome (completed, or the
+ *     observed error) and the run duration. Maintenance phases and
+ *     sub-agent flows never notify.
+ * Settings are read live at event time, and every path is exception-safe:
+ * a notification failure must never touch the agent loop or tool dispatch.
+ *
+ * @param ctx - plugin context (`tools/execute` and `agent/*` are optional
+ *   event surfaces — listeners register best-effort).
+ * @param configOf - live settings reader.
+ */
+function registerWindowsNotify(ctx, configOf) {
+  const tracker = createFlowTracker();
+  const rootsOf = () => {
+    let agents;
+    try {
+      agents = ctx.get("agents");
+    } catch { /* the agents service is optional in this deployment */ }
+    if (!agents || typeof agents.roots !== "function") return null;
+    return agents.roots();
+  };
+  const isRootAgent = (agent) => {
+    const roots = rootsOf();
+    if (roots === null) return true; // no registry — assume root (headless safety)
+    return roots.includes(agent);
+  };
+  const disposers = [];
+  try {
+    disposers.push(ctx.on("tools/execute", (exec, next) => {
+      try {
+        const settings = resolveNotifySettings(configOf().notify);
+        if (settings.enabled && settings.onQuestion && exec?.name === "ask_user_question") {
+          notifyFire(ctx, configOf, "question", buildQuestionBody(exec?.arguments?.questions));
+        }
+      } catch { /* notification must never break dispatch */ }
+      return next();
+    }));
+  } catch (error) {
+    ctx.logger?.warn?.("better-deepseek-harness: question notification listener registration failed: %s", error?.message ?? error);
+  }
+  try {
+    disposers.push(ctx.on("agent/status", (payload) => {
+      try {
+        if (typeof payload !== "object" || payload === null) return;
+        const { agent, status } = payload;
+        if (status !== "idle" && status !== "running") return;
+        if (!isRootAgent(agent)) return;
+        // Maintenance phases (internal work) are not user flows.
+        if (status === "running" && agent?.phase?.kind === "maintenance") return;
+        const ended = tracker.onStatus(String(agent?.id ?? ""), status);
+        if (ended === null) return;
+        const settings = resolveNotifySettings(configOf().notify);
+        if (!settings.enabled || !settings.onDone) return;
+        notifyFire(ctx, configOf, "done", buildDoneBody({
+          failed: ended.record.failed !== null,
+          ...(ended.record.failed !== null ? { error: ended.record.failed } : {}),
+          durationMs: Date.now() - ended.record.startedAt
+        }));
+      } catch { /* notification must never break agent events */ }
+    }));
+  } catch (error) {
+    ctx.logger?.warn?.("better-deepseek-harness: done notification listener registration failed: %s", error?.message ?? error);
+  }
+  try {
+    disposers.push(ctx.on("agent/error", (payload) => {
+      try {
+        if (typeof payload !== "object" || payload === null) return;
+        const { agent, error } = payload;
+        if (!isRootAgent(agent)) return;
+        const message = typeof error?.message === "string" && error.message !== "" ? error.message : String(error ?? "unknown error");
+        tracker.onError(String(agent?.id ?? ""), message);
+      } catch { /* recording failures must never break agent events */ }
+    }));
+  } catch (error) {
+    ctx.logger?.warn?.("better-deepseek-harness: error tracking listener registration failed: %s", error?.message ?? error);
+  }
+  if (typeof ctx.effect === "function") {
+    ctx.effect(() => () => {
+      for (const dispose of disposers.splice(0)) {
+        try { dispose(); } catch { /* already gone */ }
+      }
+    }, "better-deepseek-harness: windows notification listeners");
+  }
+}
+
 /* ─────────────────────────── rescue mode ─────────────────────────── */
 
 /**
@@ -3727,6 +3935,11 @@ function apply(ctx, config = {}) {
   //     their prompt guidance, following the live ext-center.github.enabled
   //     setting (public repositories need no token, so they default on).
   const syncGithub = registerGithubTools(ctx, configOf);
+
+  // 0f. Windows notifications: a toast when the model asks the user, and one
+  //     when a root-agent flow ends. The live ext-center.notify settings gate
+  //     every toast at event time; non-Windows hosts no-op.
+  registerWindowsNotify(ctx, configOf);
 
   // 1. settings namespace (native preferences). The registration rides a
   //    scoped fiber that waits for the settings service (the same pattern as
@@ -4370,7 +4583,7 @@ const routes = {
         return base && typeof base === "object" && !Array.isArray(base) ? base : {};
       };
       const patch = {};
-      for (const key of ["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision", "tavily", "github"]) {
+      for (const key of ["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision", "tavily", "github", "notify"]) {
         if (key in body) {
           const value = body[key];
           if (key === "allowLan" && typeof value !== "boolean") throw err("bad-request", "allowLan must be a boolean");
@@ -4467,6 +4680,12 @@ const routes = {
             // Sections replace as a whole: carry over untouched stored fields
             // (notably the write-only token) so partial patches never erase them.
             patch[key] = { ...baseSection(key), ...value };
+          } else if (key === "notify") {
+            if (typeof value !== "object" || value === null || Array.isArray(value)) throw err("bad-request", "notify must be an object");
+            for (const field of ["enabled", "onQuestion", "onDone"]) {
+              if (field in value && typeof value[field] !== "boolean") throw err("bad-request", `notify.${field} must be a boolean`);
+            }
+            patch[key] = { ...baseSection(key), ...value };
           } else {
             patch[key] = value;
           }
@@ -4478,7 +4697,7 @@ const routes = {
           throw err("bad-request", "reset must be an array of strings");
         }
         for (const key of body.reset) {
-          if (!["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision", "tavily", "github"].includes(key)) {
+          if (!["allowLan", "skillRoot", "customSkillDirs", "treeRoot", "vision", "tavily", "github", "notify"].includes(key)) {
             throw err("bad-request", `unknown settings key \"${key}\"`);
           }
           resets.push(key);
@@ -4894,4 +5113,4 @@ const routes = {
   }
 };
 
-export { NAME, SETTINGS_NS, apply, inject, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks };
+export { NAME, SETTINGS_NS, apply, inject, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks, __setNotifyHostHooks };

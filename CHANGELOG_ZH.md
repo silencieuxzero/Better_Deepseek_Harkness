@@ -8,6 +8,12 @@
 
 ### 新增
 
+- **Windows 通知**（仅 Windows）：通过系统 Toast 提醒，应用在后台或窗口未聚焦时照常弹出，设置页新增「通知」页签（`ext-center.notify`）：
+  - **提问时通知**：模型调用 `ask_user_question` 等待输入时弹出，附问题摘要（截断）；
+  - **流程结束时通知**：一次根 agent 流程（running → idle）结束时弹出，附结果（已完成 / 出错 + 错误摘要）与耗时；子 agent 流程与内部维护阶段不通知；
+  - 配置：`enabled`（总开关，默认开）/ `onQuestion` / `onDone` 三个布尔开关，写入 settings.yaml 的 `ext-center.notify` 节；
+  - 实现：宿主为 Electron 时优先用 Electron 主进程 `Notification`，否则经 `powershell.exe -EncodedCommand` 调 WinRT `ToastText02`（单引号字面量转义 + `CreateTextNode` 注入，spawn 15 秒超时兜底）；通知失败只记日志，绝不阻塞 agent loop 与工具分发；非 Windows 自动 no-op。
+  - 纯逻辑在 `src/notify.ts`（设置解析、平台门、文本截断与转义、文案构建、Toast 脚本构建、agent 流程追踪状态机），宿主副作用经 `__setNotifyHostHooks` 注入；由 `tests/notify.spec.ts` 与新增的 `tests/host-wiring.spec.ts` 用例覆盖。
 - **GitHub 仓库访问**：通过 GitHub REST API 查询仓库，设置页新增「GitHub」页签（`ext-center.github`）：
   - 启用后向模型注册五个工具并加入系统提示引导：`github_repo`（仓库元数据：描述 / star / fork / 默认分支 / 语言 / 许可证 / 主题）、`github_tree`（列目录，含大小；路径指向文件时提示改用 `github_file`）、`github_file`（读文件：base64 解码、截断到 64 KiB、二进制标记；路径指向目录时提示改用 `github_tree`）、`github_search`（仓库搜索，GitHub 搜索语法，1–10 条）、`github_releases`（近期发布，说明截断到 4000 字符）；
   - **Token 可选**：公开仓库免认证访问（60 次/小时/IP）；设置页密码框仅写入不回显（`ghp_` / `github_pat_` 等前缀格式校验，`/ext/api/state` 只返回 `tokenConfigured` 布尔）；401 / 403（限流）/ 404 等错误映射为可读提示；

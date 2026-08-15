@@ -64,6 +64,15 @@ describe("built lib/ artifact", () => {
     expect(validateGithubToken("ghp_" + "a".repeat(36))).toBeNull();
   });
 
+  it("loads the compiled notify.js", async () => {
+    const { NOTIFY_DEFAULTS, buildToastScript, createFlowTracker, resolveNotifySettings } = await import("../lib/notify.js");
+    expect(NOTIFY_DEFAULTS.enabled).toBe(true);
+    expect(resolveNotifySettings({ onQuestion: false }).onQuestion).toBe(false);
+    expect(buildToastScript("t", "b")).toContain("CreateTextNode('t')");
+    const tracker = createFlowTracker();
+    expect(tracker.onStatus("a", "idle")).toBeNull();
+  });
+
   it("loads the compiled terminal-buffer.js", async () => {
     const { createTerminalBuffer, appendTerminalBuffer, terminalBufferSlice } = await import("../lib/terminal-buffer.js");
     const state = createTerminalBuffer();
