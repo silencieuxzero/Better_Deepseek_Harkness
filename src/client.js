@@ -885,7 +885,11 @@ window.__ModuleLoader__.load({
 						jsx(Field, { label: t("visionModel"), hint: t("visionModelHint"), children: jsx(TextInput, { value: draft.visionModel, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionModel: value })); } }) }),
 						jsx(Field, { label: t("visionPrompt"), hint: t("visionPromptHint"), children: jsx(TextArea, { value: draft.visionPrompt, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionPrompt: value })); }, rows: 3 }) }),
 						jsx(Field, { label: t("visionMaxImages"), hint: t("visionMaxImagesHint").replace("{n}", String(limits.visionMaxImagesCap)), children: jsx(TextInput, { value: draft.visionMaxImages, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionMaxImages: value })); } }) }),
-						jsx("p", { className: "extc-empty", children: t("visionNote") })
+						jsx("p", { className: "extc-empty", children: t("visionNote") }),
+						jsxs("div", { className: "extc-actions", children: [
+							jsx(Button, { primary: true, busy: busy, disabled: !writable, onClick: save, children: t("save") }),
+							jsx(Button, { small: true, disabled: !writable || busy, onClick: function () { reset("vision"); }, children: t("reset") + " · vision" })
+						] })
 					] })
 				] })
 			] });
