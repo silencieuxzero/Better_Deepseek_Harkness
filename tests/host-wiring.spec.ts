@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { apply, inject, NAME, SETTINGS_NS } from "../src/index.js";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { apply, inject, NAME, SETTINGS_NS, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage } from "../src/index.js";
 
 /**
  * A minimal cordis ctx double for apply(). `baseUrl` must be a real file URL
@@ -1047,5 +1049,213 @@ describe("config route (tavily)", () => {
     const tavily = body.value.config.tavily as Record<string, unknown>;
     expect(tavily).not.toHaveProperty("apiKey");
     expect(tavily.apiKeyConfigured).toBe(true);
+  });
+});
+
+/* ─────────────────── git source build fallback ─────────────────── */
+
+describe("packageEntryPoints", () => {
+  it("reads the main field", () => {
+    expect(packageEntryPoints({ main: "lib/index.js" })).toEqual(["lib/index.js"]);
+  });
+
+  it("reads a string exports entry", () => {
+    expect(packageEntryPoints({ exports: { ".": "./lib/index.js" } })).toEqual(["./lib/index.js"]);
+  });
+
+  it("prefers import over require inside a condition object", () => {
+    expect(packageEntryPoints({ exports: { ".": { require: "./lib/index.cjs", import: "./lib/index.js" } } })).toEqual(["./lib/index.js"]);
+  });
+
+  it("digs into a nested condition object", () => {
+    expect(packageEntryPoints({ exports: { ".": { types: "./lib/index.d.ts", default: "./lib/index.js" } } })).toEqual(["./lib/index.js"]);
+  });
+
+  it("takes the first string of a fallback array", () => {
+    expect(packageEntryPoints({ exports: { ".": ["./lib/index.js", "./index.js"] } })).toEqual(["./lib/index.js"]);
+  });
+
+  it("returns [] when nothing is declared", () => {
+    expect(packageEntryPoints({ name: "x" })).toEqual([]);
+  });
+});
+
+describe("packageEntryExists", () => {
+  it("is true when any declared entry exists on disk", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dsh-ext-"));
+    try {
+      mkdirSync(join(dir, "lib"));
+      writeFileSync(join(dir, "lib", "index.js"), "export {};\n");
+      expect(packageEntryExists(dir, { main: "lib/index.js" })).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is false when every declared entry is missing (unbuilt repo)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dsh-ext-"));
+    try {
+      expect(packageEntryExists(dir, { main: "lib/index.js", exports: { ".": "./lib/index.js" } })).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is true when nothing is declared (loader decides)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dsh-ext-"));
+    try {
+      expect(packageEntryExists(dir, { name: "x" })).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ensureBuiltPackage", () => {
+  type RunCall = { cmd: string; args: string[]; cwd: string };
+
+  function fakeRunFactory(installCreatesEntry: boolean, buildCreatesEntry: boolean) {
+    const calls: RunCall[] = [];
+    let ran = 0;
+    const run = async (cmd: string, args: string[], cwd: string) => {
+      calls.push({ cmd, args, cwd });
+      ran += 1;
+      if (ran === 1 && installCreatesEntry) {
+        mkdirSync(join(cwd, "lib"), { recursive: true });
+        writeFileSync(join(cwd, "lib", "index.js"), "export {};\n");
+      }
+      if (ran === 2 && buildCreatesEntry) {
+        mkdirSync(join(cwd, "lib"), { recursive: true });
+        writeFileSync(join(cwd, "lib", "index.js"), "export {};\n");
+      }
+      return { stdout: "", stderr: "" };
+    };
+    return { calls, run };
+  }
+
+  function stagedPackage(scripts: Record<string, string> = {}) {
+    const dir = mkdtempSync(join(tmpdir(), "dsh-ext-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", main: "lib/index.js", scripts }));
+    return dir;
+  }
+
+  it("skips the build when the entry already exists", async () => {
+    const dir = stagedPackage();
+    try {
+      mkdirSync(join(dir, "lib"), { recursive: true });
+      writeFileSync(join(dir, "lib", "index.js"), "export {};\n");
+      const { calls, run } = fakeRunFactory(false, false);
+      expect(await ensureBuiltPackage(dir, { main: "lib/index.js" }, run)).toBe(false);
+      expect(calls).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds from source when the repo ships no lib/", async () => {
+    const dir = stagedPackage({ build: "tsc -p ." });
+    try {
+      const { calls, run } = fakeRunFactory(false, true);
+      expect(await ensureBuiltPackage(dir, { main: "lib/index.js", scripts: { build: "tsc -p ." } }, run)).toBe(true);
+      expect(calls.map((call) => call.args[0])).toEqual(["install", "run"]);
+      expect(calls[0].args.slice(1)).toContain("--no-audit");
+      expect(calls[1].args).toEqual(["run", "build"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips npm run build when install alone produces the entry (prepare hook)", async () => {
+    const dir = stagedPackage({ build: "tsc -p ." });
+    try {
+      const { calls, run } = fakeRunFactory(true, false);
+      expect(await ensureBuiltPackage(dir, { main: "lib/index.js", scripts: { build: "tsc -p ." } }, run)).toBe(true);
+      expect(calls.map((call) => call.args[0])).toEqual(["install"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs npm run build when install alone does not produce the entry", async () => {
+    const dir = stagedPackage({ build: "tsc -p ." });
+    try {
+      const { calls, run } = fakeRunFactory(false, true);
+      expect(await ensureBuiltPackage(dir, { main: "lib/index.js", scripts: { build: "tsc -p ." } }, run)).toBe(true);
+      expect(calls.map((call) => call.args[0])).toEqual(["install", "run"]);
+      expect(calls[1].args).toEqual(["run", "build"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails loudly when no build script exists", async () => {
+    const dir = stagedPackage();
+    try {
+      const { run } = fakeRunFactory(false, false);
+      await expect(ensureBuiltPackage(dir, { main: "lib/index.js", scripts: {} }, run)).rejects.toMatchObject({
+        code: "build-failed",
+        message: expect.stringContaining("build")
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails loudly when the build still leaves the entry missing", async () => {
+    const dir = stagedPackage({ build: "tsc -p ." });
+    try {
+      const { run } = fakeRunFactory(false, false);
+      await expect(ensureBuiltPackage(dir, { main: "lib/index.js", scripts: { build: "tsc -p ." } }, run)).rejects.toMatchObject({
+        code: "build-failed",
+        message: expect.stringContaining("lib/index.js")
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("maps a missing npm executable to build-tool-missing", async () => {
+    const dir = stagedPackage();
+    try {
+      const run = async () => { throw { code: "spawn", message: "spawn npm.cmd ENOENT", tail: "" }; };
+      await expect(ensureBuiltPackage(dir, { main: "lib/index.js", scripts: {} }, run)).rejects.toMatchObject({
+        code: "build-tool-missing"
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the npm output tail on a failed install", async () => {
+    const dir = stagedPackage();
+    try {
+      const run = async () => { throw { code: "failed", message: "exited with code 1", tail: "npm error something broke" }; };
+      await expect(ensureBuiltPackage(dir, { main: "lib/index.js", scripts: {} }, run)).rejects.toMatchObject({
+        code: "build-failed",
+        message: expect.stringContaining("npm error something broke")
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("materializePackage source metadata", () => {
+  it("returns { manifest, builtFromSource } for a folder source", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dsh-ext-"));
+    try {
+      const pkgDir = join(root, "pkg");
+      mkdirSync(pkgDir);
+      writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "x", version: "1.0.0", main: "index.js" }));
+      writeFileSync(join(pkgDir, "index.js"), "export {};\n");
+      // staging must live OUTSIDE the package dir (cpSync rejects copying a dir into itself)
+      const staging = join(root, "staging");
+      const result = await materializePackage({ kind: "folder", path: pkgDir }, staging);
+      expect(result.manifest.name).toBe("x");
+      expect(result.builtFromSource).toBe(false);
+      expect(existsSync(join(staging, "package.json"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

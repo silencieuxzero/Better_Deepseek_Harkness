@@ -51,6 +51,7 @@
 - **cordis.patch.yml 是加载器树的唯一活源**：所有变更（插件安装/停用/卸载、MCP 行）都经同一个事务性写入器：解析 → 合并 → 临时文件 + rename 原子写，保留文件头注释，`!!js` 表达式（loader 配置方言）往返无损。连续写入串行化，避免配置监听器背靠背刷新。
 - **`.dsh-ext-center.json`** 是 profile 目录下的侧车状态文件：记录包来源与补丁行，卸载/停用时据此精确移除对应行。
 - 插件安装 = 包落到共享模块根 `~/.dsh/profiles/node_modules` → 合并其 bundle 补丁行（无补丁的包自动补 `{id, name}` 行）→ HMR 配置监听器事务性重放，条目即时挂载。
+- **Git 源构建回退**：`materializePackage` 对 git 源克隆后检查包声明的入口（`main` / `exports["."]`，见 `packageEntryPoints`）；入口缺失（仓库未提交构建产物，如 `lib/` 不存在）时自动执行 `npm install --no-audit --no-fund` 与 `npm run build`（`ensureBuiltPackage`，单步超时 10 分钟、输出只保留尾部 16 KiB，spawn 失败报 `build-tool-missing`，其余报 `build-failed` 并带输出尾部）。`npm install` 本身也会跑 `prepare` 钩子，所以只靠 `prepare` 出产物的仓库同样能恢复。构建成功与否经安装响应 `builtFromSource` 透出给客户端。npm / URL / folder 源不触发构建（发布产物理应已构建；folder 是用户本地目录，构建与否由用户负责）。
 - **归档删除**：`/ext/api/archive/delete` 跳过仍加载/运行中的会话，删除其余已归档会话日志（经 `sessionPersistence.locate` 定位到会话目录后移除），并尽力从工作区记账中 detach；Harness 当前公开面没有 unarchive/delete session RPC，因此该操作是永久删除。
 
 ## 配置与安全不变量
@@ -69,7 +70,7 @@
 
 ## 模块职责
 
-- `src/index.js`：宿主侧入口，导出 `{ NAME, SETTINGS_NS, apply, inject }`；`apply(ctx, config)` 是插件主体，按固定顺序注册各效应，并提供 `/ext/api/input/optimize` 输入优化端点与 `/ext/api/archive/delete` 归档删除端点。
+- `src/index.js`：宿主侧入口，导出 `{ NAME, SETTINGS_NS, apply, inject, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage }`；`apply(ctx, config)` 是插件主体，按固定顺序注册各效应，并提供 `/ext/api/input/optimize` 输入优化端点与 `/ext/api/archive/delete` 归档删除端点。后四个导出是安装流水线内部件，导出仅为测试可及（行为规格在 `tests/host-wiring.spec.ts`）。
 - `src/client.js`：浏览器侧（见上），另注册「优化输入」按钮并定位到发送按钮与上下文按钮之间。
 - `src/tool-args.ts`：纯函数模块（`tryParseJsonObject` / `repairToolArguments`），无任何 I/O，是工具参数单测的主战场。
 - `src/ansi.ts`：纯函数模块（`stripAnsiChunk`），无任何 I/O，流式剥离终端输出里的 ANSI CSI/OSC 转义序列。

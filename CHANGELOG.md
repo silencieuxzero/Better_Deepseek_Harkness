@@ -8,7 +8,9 @@ For the Chinese version, see [CHANGELOG_ZH.md](CHANGELOG_ZH.md).
 
 ## [Unreleased]
 
-- Nothing yet.
+### Fixed
+
+- **Git-source installs now build missing artifacts**: when a repository does not commit its build output (no `lib/` at all — unbuilt source), installation no longer yields a broken package. After cloning, the declared entry (`main` / `exports`) is checked; if missing, `npm install` + `npm run build` run automatically (10-minute per-step cap; failures surface a clear error with the output tail; a missing npm reports `build-tool-missing`). The success message notes that the package was built from source.
 
 ## [0.6.0] - 2026-08-15
 

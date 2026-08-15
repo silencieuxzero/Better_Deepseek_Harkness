@@ -35,6 +35,7 @@
 
 - 列出通过本插件安装的插件（版本 / 来源 / 配置行数 / 启用状态）
 - 四种来源：npm 包名（走 npm registry）、`.tgz` 包 URL（内置 tar 解包，无需外部工具）、本机目录、Git 仓库
+- Git 源若未提交构建产物（`lib/` 不存在），安装时自动 `npm install` + `npm run build` 补构建（需要本机有 npm；失败会给出明确报错，改用 npm / tarball 源即可）
 - 安装后写入 profile 的 `cordis.patch.yml`，由启动时的 HMR 配置监听器**热生效，无需重启**；带客户端界面的插件在刷新页面后出现
 - 启用 / 停用 / 卸载（同样热生效）
 - 只读展示当前加载器条目（id / 状态 / 是否启用）
@@ -218,7 +219,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 6. 会话页：在输入框右下角（发送按钮与上下文按钮之间）点击星星图标「优化输入」，当前模型会把输入优化后回填到输入框
 7. 侧栏底部：点击「归档」查看已归档对话，勾选后点击「删除」批量永久删除（需二次确认；仍在运行 / 加载中的会话会自动跳过并提示）
 
-> 安全：所有变更类接口以及会暴露本机路径/输出的读取端点（`/ext/api/state`、文件树、终端输出、Git 读取、MCP 列表）默认只允许本机（回环地址）调用；如需局域网管理，在「设置」页打开 `allowLan`。
+> 安全：所有变更类接口以及会暴露本机路径/输出的读取端点（`/ext/api/state`、文件树、终端输出、Git 读取、MCP 列表）默认只允许本机（回环地址）调用；如需局域网管理，在「设置」页打开 `allowLan`。另外注意：Git 源安装本身等于运行仓库里的代码——安装/加载插件以及自动构建（`npm install` 会执行该仓库声明的 npm 生命周期脚本）都会执行其内容，请只安装你信任的仓库。
 
 ## HTTP API（主机侧，前缀 /ext/api）
 
@@ -300,6 +301,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 - **看不到设置页区块**：浏览器刷新页面（客户端 bundle 由 boot manifest 注入，刷新后加载）。
 - **设置页一直「加载中…」/ 图片转述没有配置项**：设置页改走本插件自己的 `/ext/api/state` 与 `/ext/api/config`，不再依赖 api-proxy 是否暴露 `ext-center`。旧版本若仍在加载中，升级后重启 `dsh web` 并刷新页面；若只有旧版可用，检查宿主日志确认 `ext-center` 设置命名空间已注册。
 - **安装报 git-unavailable**：本机未安装 git，改用目录 / tarball URL / npm 包名来源。
+- **安装报 build-failed / build-tool-missing**：Git 源仓库没有提交构建产物，且自动构建失败（或本机没有 npm）。先确认本机 `npm` 可用且能访问 registry；若仓库没有 `build` 脚本或构建后仍缺入口文件，请改用该包的 npm 包名 / tarball URL 安装。
 - **安装报 `EPERM: Permission denied`（Windows，路径指向 `.dsh-ext-center-staging`）**：Windows 上删除目录时若被其他进程短暂占用（杀毒实时扫描刚 clone 的仓库、文件监听等），会返回 EPERM。本插件已在 staging 清理与目标目录替换处内置重试（`maxRetries: 5`），瞬时锁会自动跳过；若反复复现说明锁是持续性的——将 `~/.dsh` 加入 Windows 安全中心的排除目录，或重启一次后再装（残留的 staging 目录可手动删除，不影响数据）。
 - **启动报 `[better-deepseek-harness] invalid config on the ext-center row ...`**：`cordis.patch.yml` 里 `ext-center` 行的 `config:` 有非法值（超出范围或类型错误）。按「部署配置」一节修正或直接删掉该 `config:` 块（全部回落默认值）后重启。
 - **偶发 `invalid arguments: missing required property ...`**：模型生成的工具参数偶发缺字段或 JSON 损坏。本插件的 `tools/execute` 包装层会自动修复 `description` 缺失与可恢复的 JSON；确实缺少 `code` / `command` 等内容的调用仍会按 DSH 原机制报错并让模型重试，属正常反馈。

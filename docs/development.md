@@ -32,6 +32,8 @@ npm run check        # typecheck + test
 
 `lib/` 是构建产物且提交进 git：安装流程（install.ps1 / 手动复制）不执行任何构建，直接消费 `lib/`。改完 `src/` 后必须 `npm run build` 并提交新的 `lib/`，否则安装方拿不到改动。
 
+注意：设置页「插件」页签的 **Git 源安装**是另一条路径——它克隆目标仓库后若发现其未提交构建产物（入口缺失），会自动 `npm install` + `npm run build` 补构建（见 docs/architecture.md「Git 源构建回退」）。本仓库自己的安装（install.ps1 / 手动复制）仍免构建。
+
 ## 构建
 
 `npm run build` 用 tsc（`allowJs` 关闭）把 `src/*.ts` 发射到 `lib/*.js`（`ansi`、`tavily`、`terminal-buffer`、`tool-args`），再由 `scripts/copy-js.mjs` 把 `index.js`、`client.js` 原样复制到 `lib/`。产物与手写时代的旧文件保持同构——`package.json` 的 `main`/`exports` 与 `dsh.client.inject` 指向不变，运行时行为不变。
@@ -40,7 +42,7 @@ npm run check        # typecheck + test
 
 - `tests/tool-args.spec.ts`：纯逻辑（JSON 恢复、description 修补）的行为规格，是回归的主战场。
 - `tests/ansi.spec.ts`：终端 ANSI 剥离（CSI/OSC、跨 chunk 的未完成序列）的行为规格。
-- `tests/host-wiring.spec.ts`：用最小 ctx 双（mock）跑 `apply()`，断言接线（路由、设置命名空间、技能 provider、两个瀑布）与路由调度器（200/403/404/405、错误信封）；不触真实文件系统与网络。
+- `tests/host-wiring.spec.ts`：用最小 ctx 双（mock）跑 `apply()`，断言接线（路由、设置命名空间、技能 provider、两个瀑布）与路由调度器（200/403/404/405、错误信封）；不触真实文件系统与网络。另含安装流水线内部件的规格：`packageEntryPoints` / `packageEntryExists` / `ensureBuiltPackage`（构建回退的决策与报错，子进程用注入的假 runner，不跑真实 npm）。
 - `tests/terminal-buffer.spec.ts`：终端输出字节环（截断后 offset 语义、UTF-8 边界对齐）的行为规格。
 - `tests/built-smoke.spec.ts`：构建产物契约——`lib/` 的 JS 与 `src/` 逐字节一致，且 `lib/` 入口能在纯 Node ESM 下加载运行。
 

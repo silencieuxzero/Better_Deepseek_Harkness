@@ -62,6 +62,7 @@ window.__ModuleLoader__.load({
 			pluginNameOptional: "安装后将按 package.json 中的 name 为准",
 			pluginInstallOk: "插件已安装：",
 			pluginInstallNote: "主机侧已热生效；客户端界面刷新页面后出现。",
+			pluginInstallBuilt: "（仓库未提交构建产物，已自动执行 npm install 并构建）",
 			pluginRemoveOk: "插件已卸载：",
 			pluginRemoveConfirm: "确定卸载插件 ",
 			pluginEnabled: "已启用",
@@ -302,6 +303,7 @@ window.__ModuleLoader__.load({
 			pluginNameOptional: "The package.json name wins after install",
 			pluginInstallOk: "Plugin installed: ",
 			pluginInstallNote: "Host rows activated live; a client UI appears after a page refresh.",
+			pluginInstallBuilt: " (the repo ships no built output — npm install + build ran automatically)",
 			pluginRemoveOk: "Plugin removed: ",
 			pluginRemoveConfirm: "Uninstall plugin ",
 			pluginEnabled: "Enabled",
@@ -741,7 +743,7 @@ window.__ModuleLoader__.load({
 					setUrl("");
 					setFolder("");
 					setGit("");
-					setMessage(t("pluginInstallOk") + value.name + " (" + (value.version || "?") + ") — " + t("pluginInstallNote"));
+					setMessage(t("pluginInstallOk") + value.name + " (" + (value.version || "?") + ") — " + t("pluginInstallNote") + (value.builtFromSource ? t("pluginInstallBuilt") : ""));
 					load();
 				}, function (reason) {
 					setError(String(reason && reason.message ? reason.message : reason));
