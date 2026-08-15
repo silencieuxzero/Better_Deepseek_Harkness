@@ -6,6 +6,9 @@
 
 ## 功能
 
+<details>
+<summary>点击展开功能列表</summary>
+
 - **技能管理**：列出已安装技能（名称 / 描述 / 适用场景 / 路径）；支持三种安装来源：
   - 粘贴 Markdown（含 `---` frontmatter，必须有 `name` 与 `description`）
   - 从 URL 下载 Markdown 文件
@@ -33,6 +36,8 @@
 - **MCP 服务器**：设置页新增「MCP」页签——添加自定义 MCP 服务器（stdio 本地命令 / streamable-http 远程 URL，支持参数、环境变量、工作目录、请求头、调用超时）；每个服务器写为 cordis.patch.yml 中的一行 `@deepseek-ai/dsh-mcp-client` 条目（id `ext-center.mcp.<名称>`），由配置监听器**热生效**；列表实时显示加载器状态（运行中/失败/已停用）并支持启用/停用/移除；服务器工具以 `mcp__<名称>__<工具名>` 提供给模型；手写的外部 MCP 行只读展示
 - **图片转述**：设置页新增「图片转述」配置——启用后，含图片的模型请求在进入文本模型前，先由用户指定的视觉模型（提供方 / 模型 / 提示词 / 单次上限 1-8，部署上限可配置）通过 `llm/stream` 瀑布包装转述成文字（仅替换本次请求中的图片块，会话记录原图不受影响）；转述失败自动降级为占位文本；主模型与转述模型同路由时原生图片直通；提供方下拉来自已注册的 LLM 路由（`/ext/api/state` 的 `llmProviders`），也可选择「自定义路由」并填写 OpenAI 兼容的 `chat/completions` API URL，由插件直接调用该端点转述图片
 - **工具参数自动修复**：通过 `tools/execute` 包装层修复模型偶发的参数抖动——`description` 缺失 / 为空 / 类型错误时自动补上中性占位符；`arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象，避免无谓的 `INVALID_ARGS` 报错
+
+</details>
 
 ## 安装
 
