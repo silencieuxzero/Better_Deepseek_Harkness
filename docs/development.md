@@ -39,6 +39,7 @@ npm run check        # typecheck + test
 ## 测试
 
 - `tests/tool-args.spec.ts`：纯逻辑（JSON 恢复、description 修补）的行为规格，是回归的主战场。
+- `tests/ansi.spec.ts`：终端 ANSI 剥离（CSI/OSC、跨 chunk 的未完成序列）的行为规格。
 - `tests/host-wiring.spec.ts`：用最小 ctx 双（mock）跑 `apply()`，断言接线（路由、设置命名空间、技能 provider、两个瀑布）与路由调度器（200/403/404/405、错误信封）；不触真实文件系统与网络。
 - `tests/built-smoke.spec.ts`：构建产物契约——`lib/` 的 JS 与 `src/` 逐字节一致，且 `lib/` 入口能在纯 Node ESM 下加载运行。
 
@@ -55,7 +56,7 @@ npm run check        # typecheck + test
 
 ## 渐进式 TypeScript 迁移
 
-当前状态：`src/tool-args.ts` 是完整 TypeScript（strict 通过）；`src/index.js` 与 `src/client.js` 仍是带 JSDoc 的 JS，`checkJs` 未开启（历史代码无参数类型标注，开启会产生大量噪音）。迁移路径：
+当前状态：`src/tool-args.ts` 与 `src/ansi.ts` 是完整 TypeScript（strict 通过）；`src/index.js` 与 `src/client.js` 仍是带 JSDoc 的 JS，`checkJs` 未开启（历史代码无参数类型标注，开启会产生大量噪音）。迁移路径：
 
 1. 逐个函数补 JSDoc 参数/返回类型，或直接转为 `.ts`；
 2. 待 JS 文件类型覆盖率达标后开启 `checkJs: true`，再逐步收紧为 `strict`；

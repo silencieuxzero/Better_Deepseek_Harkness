@@ -48,6 +48,7 @@ import yaml from "js-yaml";
 import z from "@deepseek-ai/schemastery";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import { repairToolArguments } from "./tool-args.js";
+import { stripAnsiChunk } from "./ansi.js";
 
 /* ─────────────────────────── terminals ─────────────────────────── */
 
@@ -112,7 +113,10 @@ function spawnTerminalImpl(session, shell, cwd, bufferLimit) {
       })();
   session.impl = spawnImpl;
   spawnImpl.onData((data) => {
-    session.buffer = (session.buffer + data).slice(-bufferLimit);
+    const text = typeof data === "string" ? data : data.toString("utf8");
+    const stripped = stripAnsiChunk(text, session.ansiTail);
+    session.ansiTail = stripped.tail;
+    session.buffer = (session.buffer + stripped.text).slice(-bufferLimit);
   });
   spawnImpl.onExit((e) => {
     session.dead = true;
@@ -132,6 +136,7 @@ function createTerminalSession(kind, cwd, cfg, spawner = spawnTerminalImpl) {
     cwd,
     createdAt: Date.now(),
     buffer: "",
+    ansiTail: "",
     dead: false,
     exitCode: null,
     impl: null

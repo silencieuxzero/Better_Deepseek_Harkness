@@ -1,4 +1,4 @@
-﻿# better-deepseek-harness 架构
+# better-deepseek-harness 架构
 
 阅读本文后再改动本插件的任何代码。它假设你了解 Cordis 与 DeepSeek Harness 的基础概念；若不了解，先读 Harness 的 [架构文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md) 与 [Cordis 入门](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cordis-primer.md)。
 
@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | 宿主侧 | `src/index.js` | dsh 主机进程（Node） | 设置命名空间、/ext/api 路由、技能/插件生命周期、文件树、终端、git、MCP、图片转述、工具参数修复 |
 | 客户端 | `src/client.js` | 浏览器（Web UI） | 设置页「更好的 DeepSeek Harness」区块、对话页「终端」「Git」页签、侧栏文件树 |
-| 纯逻辑 | `src/tool-args.ts` | 宿主侧 | 模型工具参数的 JSON 恢复与 description 修补（唯一完整 TypeScript 化的模块） |
+| 纯逻辑 | `src/tool-args.ts`、`src/ansi.ts` | 宿主侧 | 模型工具参数的 JSON 恢复与 description 修补；终端 ANSI 转义序列的流式剥离 |
 
 `package.json` 的 `dsh` 字段声明了这个插件如何进入运行时：
 
@@ -66,4 +66,5 @@
 
 - `src/index.js`：宿主侧入口，导出 `{ NAME, SETTINGS_NS, apply, inject }`；`apply(ctx, config)` 是插件主体，按固定顺序注册各效应。
 - `src/client.js`：浏览器侧（见上）。
-- `src/tool-args.ts`：纯函数模块（`tryParseJsonObject` / `repairToolArguments`），无任何 I/O，是唯一完整 TypeScript 化的模块，也是单测的主战场。
+- `src/tool-args.ts`：纯函数模块（`tryParseJsonObject` / `repairToolArguments`），无任何 I/O，是工具参数单测的主战场。
+- `src/ansi.ts`：纯函数模块（`stripAnsiChunk`），无任何 I/O，流式剥离终端输出里的 ANSI CSI/OSC 转义序列。
