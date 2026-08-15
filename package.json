@@ -15,7 +15,11 @@
     "tests",
     "docs",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "README_EN.md",
+    "CHANGELOG.md",
+    "CHANGELOG_ZH.md",
+    "CONTRIBUTING.md"
   ],
   "license": "MIT",
   "keywords": [

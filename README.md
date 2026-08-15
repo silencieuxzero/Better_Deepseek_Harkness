@@ -11,10 +11,9 @@
 - [部署配置](#部署配置ext-center-行的-config-块)
 - [使用](#使用)
 - [HTTP API](#http-api主机侧前缀-extapi)
-- [实现要点](#实现要点)
-- [目录结构](#目录结构)
-- [开发](#开发)
 - [故障排查](#故障排查)
+
+> 想了解内部实现、参与开发与贡献？见 [CONTRIBUTING.md](CONTRIBUTING.md)（架构、目录结构、开发与测试流程）。
 
 ## 功能
 
@@ -295,55 +294,12 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 | `POST /ext/api/input/optimize` | `{text, provider, model, sessionId?, reasoningEffort?}` 用指定（当前会话所选）模型优化输入，返回 `{text}` |
 | `POST /ext/api/archive/delete` | `{ids:[...]}` 批量永久删除已归档会话（必须位于归档集合；仍在运行 / 加载中的会话跳过），返回 `{deleted, skipped, count}` |
 
-## 实现要点
-
-- **插件安装链路**：包落到 `~/.dsh/profiles/node_modules`（profile 解析链上的共享根）→ 合并该包在 package.json `dsh.bundle.patch` 中声明的补丁行（若有）；无补丁的包自动补一条 `{id: <包名>, name: <包名>}` 行保证可加载 → HMR 配置监听器事务性重放，条目即时挂载
-- **patch 写入一致性**：所有 `cordis.patch.yml` 写入都是「解析 → 合并 → 临时文件 + rename 原子写」，保留文件头注释；`!!js` 表达式（loader 配置方言）往返无损；连续写入间隔串行化，避免监听器背靠背刷新
-- **状态记账**：包来源与补丁行记录在 profile 目录的 `.dsh-ext-center.json`（卸载 / 停用时据此精确移除对应行）
-- **配置落盘**：本插件的偏好落在原生 `ctx.settings` 命名空间（`ext-center`）；该命名空间不在 api-proxy 的浏览器白名单里，因此设置页通过本插件自己的 `/ext/api/state` 与 `/ext/api/config` 读写（后者在宿主侧用 settings service 落盘）
-- **配置校验**：部署可调项是 ext-center 行 `config:` 块中经 schemastery 校验的 Config 字段，加载即校验，非法值响亮失败；安全不变量保持常量
-- **注册即效应**：settings 命名空间经 `ctx.inject(["settings"], ...)` 等待服务就绪后注册（与 dsh-settings 的 `installSettingsSection` 同模式，插件先于 settings 启动也不丢命名空间）；所有 `register()` 返回的 disposer 挂进 `ctx.effect`，插件卸载时一并释放
-- **工具参数修复**：通过 `tools/execute` waterfall（与 `dsh-tool-call-timeout-policy` 同机制）在参数校验前修复模型生成的工具参数；只修安全的 `description` 与可恢复的 JSON 字符串，绝不伪造 `code` / `command` 等内容字段；`toolRepair.enabled` 可整体关闭、`descriptionFill` 可换占位文案
-- **图片转述瀑布**：`llm/stream` 监听器返回异步可迭代对象（async generator），与瀑布「最外层返回值必须是 async iterable」的约定一致；启用开关通过包装 `llm.resolveModelInfo` 解除宿主 api-gateway 的图片准入限制
-- **优化输入**：按钮挂在 `conversation.input.right`；因插槽渲染位置在上下文按钮左侧，组件把真实 DOM 按钮插入到发送按钮之前。点击后客户端从 `modelDirectories` 读取当前会话所选 provider/model（缺失时回退到最近一条助手消息的 `requestConfig`），调用 `/ext/api/input/optimize`，宿主侧用 `ctx.llm.stream` 做一次性辅助模型调用并回填结果
-- **Tavily 集成**：`tavily_search` 工具经 `ctx.tools.register` 注册、提示引导经 `systemPrompt.section` 注入，两者随 `ext-center.tavily.enabled`（settings 命名空间 `watch`）联动注册 / 注销；执行时读取实时设置，未启用 / 未配置 / 调用失败抛清晰错误，由 agent loop 转为工具错误结果，不阻塞回答
-- **文件树根解析**：`treeRoot` 设置 → `ctx.workspaceRegistry` 最近注册的工作区 → 进程 `cwd`；未配置时默认展示最近使用的工作区
-
-## 目录结构
-
-```
-better-deepseek-harness/
-├── package.json          # 入口、dsh.bundle.patch + dsh.client 声明、scripts（build/test/typecheck）
-├── cordis.patch.yml      # bundle 补丁：插入 ext-center 行
-├── install.ps1           # 一键安装脚本（方式一，跳过 .git 与 node_modules）
-├── tsconfig.json         # 类型检查（strict，noEmit）
-├── tsconfig.build.json   # 构建：tsc 发射 src/*.ts → lib/，JS 由 copy-js.mjs 原样复制
-├── scripts/copy-js.mjs   # 构建时把 index.js / client.js 逐字节复制到 lib/
-├── src/                  # 源码
-│   ├── index.js          # 主机侧：settings 命名空间、/ext/api 路由、技能/插件生命周期、
-│   │                     #   文件树读写、工具参数修复、图片转述、MCP、Tavily 工具注册
-│   ├── client.js         # 浏览器侧：设置页区块（技能/插件/MCP/Tavily/设置页签）、
-│   │                     #   终端/Git 页签、侧栏文件树、输入优化按钮（__ModuleLoader__ 工厂格式）
-│   ├── tool-args.ts      # 模型工具参数修复纯函数（构建后为 lib/tool-args.js）
-│   ├── ansi.ts           # 终端 ANSI 转义流式剥离纯函数（构建后为 lib/ansi.js）
-│   ├── terminal-buffer.ts # 终端输出字节环：截断安全的增量 offset（构建后为 lib/terminal-buffer.js）
-│   └── tavily.ts         # Tavily 搜索纯函数：默认值 / 校验 / 请求 / 映射 / 格式化（构建后为 lib/tavily.js）
-├── tests/                # vitest 规格（tool-args / ansi / terminal-buffer / tavily / host-wiring / built-smoke）
-├── docs/                 # docs/architecture.md（架构）、docs/development.md（开发指南）
-├── lib/                  # 构建产物（npm run build 生成并提交进 git —— 安装方无需任何构建工具）
-└── README.md
-```
-
-## 开发
-
-- `npm install` 后运行 `npm run typecheck`（strict 类型检查）、`npm test`（vitest）、`npm run build`（tsc 发射 `src/` → `lib/`），详见 docs/development.md
-- `lib/` 是提交进 git 的构建产物：改完 `src/` 后必须 `npm run build` 并提交新的 `lib/`，否则安装方拿不到改动（安装流程不执行构建）
-
 ## 故障排查
 
 - **改动未热生效**：`cordis.patch.yml` 的变更由 harness 的配置监听器（HMR）应用。若短时间内连续多次修改（例如安装后立刻停用）触发监听器竞态，配置监听可能卡住——重启一次 `dsh web` 即可恢复（补丁文件本身是正确的，重启后照常加载）。本插件的写入已做间隔串行化以尽量避免该情况。
 - **看不到设置页区块**：浏览器刷新页面（客户端 bundle 由 boot manifest 注入，刷新后加载）。
 - **设置页一直「加载中…」/ 图片转述没有配置项**：设置页改走本插件自己的 `/ext/api/state` 与 `/ext/api/config`，不再依赖 api-proxy 是否暴露 `ext-center`。旧版本若仍在加载中，升级后重启 `dsh web` 并刷新页面；若只有旧版可用，检查宿主日志确认 `ext-center` 设置命名空间已注册。
 - **安装报 git-unavailable**：本机未安装 git，改用目录 / tarball URL / npm 包名来源。
+- **安装报 `EPERM: Permission denied`（Windows，路径指向 `.dsh-ext-center-staging`）**：Windows 上删除目录时若被其他进程短暂占用（杀毒实时扫描刚 clone 的仓库、文件监听等），会返回 EPERM。本插件已在 staging 清理与目标目录替换处内置重试（`maxRetries: 5`），瞬时锁会自动跳过；若反复复现说明锁是持续性的——将 `~/.dsh` 加入 Windows 安全中心的排除目录，或重启一次后再装（残留的 staging 目录可手动删除，不影响数据）。
 - **启动报 `[better-deepseek-harness] invalid config on the ext-center row ...`**：`cordis.patch.yml` 里 `ext-center` 行的 `config:` 有非法值（超出范围或类型错误）。按「部署配置」一节修正或直接删掉该 `config:` 块（全部回落默认值）后重启。
 - **偶发 `invalid arguments: missing required property ...`**：模型生成的工具参数偶发缺字段或 JSON 损坏。本插件的 `tools/execute` 包装层会自动修复 `description` 缺失与可恢复的 JSON；确实缺少 `code` / `command` 等内容的调用仍会按 DSH 原机制报错并让模型重试，属正常反馈。
