@@ -29,6 +29,7 @@
 | 自定义技能目录 | `skills.registerProvider(...)` | 把 `customSkillDirs` 中的技能提供给所有会话 |
 | 拦截工具调用 | `ctx.on("tools/execute", ...)` 瀑布 | 参数校验前修复 description 缺失与损坏 JSON（与 `dsh-tool-call-timeout-policy` 同机制） |
 | 拦截模型请求 | `ctx.on("llm/stream", ...)` 瀑布 | 含图片的请求先由视觉模型转述成文字；监听器返回异步可迭代对象（async generator），与瀑布“最外层返回值必须是 async iterable”的约定一致 |
+| 模型搜索工具 | `ctx.tools.register` + `ctx.inject(["systemPrompt"], ...)` 的 `systemPrompt.section` | `ext-center.tavily.enabled` 开启时注册 `tavily_search` 工具与提示引导（设置变更经 settings 命名空间 owner 的 `watch` 联动注册/注销）；执行时读实时设置，未启用/未配置/调用失败抛清晰错误，由 agent loop 转为工具错误结果——模型看到提示后凭已有知识作答，不阻塞正常回答 |
 | 图片准入桥 | 包装 `ctx.llm.resolveModelInfo` | `vision.enabled` 时给当前模型信息追加 `image` 模态，通过宿主 api-gateway 的图片准入校验（`MODEL_DOES_NOT_SUPPORT_IMAGES`），让带图请求进入上面的 llm/stream 转述瀑布；关闭时原样返回 |
 | 工作区解析 | `ctx.workspaceRegistry` | 文件树根目录（未配置时的默认来源） |
 | 会话输入区 | `ctx.slots.inject("conversation.input.right", ...)` | 注册「优化输入」按钮；插槽渲染位置在上下文按钮左侧，因此真实 DOM 按钮由组件插入到发送按钮与上下文按钮之间；点击后经 `/ext/api/input/optimize` 用当前会话所选模型优化输入 |
@@ -64,7 +65,7 @@
 
 ## 客户端结构
 
-`src/client.js` 是构建产物格式的浏览器模块（`__ModuleLoader__.load({ id, factory })` 工厂），由 boot manifest 注入。它在设置页注册「更好的 DeepSeek Harness」区块，并通过 `conversation.view` slot 提供「终端」「Git」页签、在侧栏底部提供文件树与归档面板、通过 `conversation.input.right` slot 提供「优化输入」按钮（真实 DOM 节点定位在发送按钮与上下文按钮之间）。归档面板从 `sessions` / `workspaces` 标准快照读取已归档会话，支持勾选后批量调用 `/ext/api/archive/delete` 永久删除。所有数据经 `fetch` 调 /ext/api；`/ext/api/state` 的 `limits` 块携带各上限与轮询间隔，界面文案与节奏自动跟随。客户端本身不做任何写入决策——一切变更都回到宿主侧的同一组端点。
+`src/client.js` 是构建产物格式的浏览器模块（`__ModuleLoader__.load({ id, factory })` 工厂），由 boot manifest 注入。它在设置页注册「更好的 DeepSeek Harness」区块（含「Tavily」页签：API Key 可见性切换、搜索深度、最大结果数、原始内容与总开关，保存/重置/格式校验全部回到 /ext/api/config），并通过 `conversation.view` slot 提供「终端」「Git」页签、在侧栏底部提供文件树与归档面板、通过 `conversation.input.right` slot 提供「优化输入」按钮（真实 DOM 节点定位在发送按钮与上下文按钮之间）。归档面板从 `sessions` / `workspaces` 标准快照读取已归档会话，支持勾选后批量调用 `/ext/api/archive/delete` 永久删除。所有数据经 `fetch` 调 /ext/api；`/ext/api/state` 的 `limits` 块携带各上限与轮询间隔，界面文案与节奏自动跟随。客户端本身不做任何写入决策——一切变更都回到宿主侧的同一组端点。
 
 ## 模块职责
 
@@ -72,3 +73,4 @@
 - `src/client.js`：浏览器侧（见上），另注册「优化输入」按钮并定位到发送按钮与上下文按钮之间。
 - `src/tool-args.ts`：纯函数模块（`tryParseJsonObject` / `repairToolArguments`），无任何 I/O，是工具参数单测的主战场。
 - `src/ansi.ts`：纯函数模块（`stripAnsiChunk`），无任何 I/O，流式剥离终端输出里的 ANSI CSI/OSC 转义序列。
+- `src/tavily.ts`：纯函数模块（Tavily 设置默认值 / API Key 校验 / 请求体构建 / 响应映射 / 结果格式化），无任何 I/O，宿主侧只负责接线 `fetch` 与工具注册。

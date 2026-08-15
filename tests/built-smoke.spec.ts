@@ -49,4 +49,11 @@ describe("built lib/ artifact", () => {
     expect(repaired.changed).toBe(true);
     expect(repaired.arguments).toEqual({ a: 1, description: "Execute tool" });
   });
+
+  it("loads the compiled tavily.js", async () => {
+    const { TAVILY_DEFAULTS, validateTavilyApiKey, resolveTavilySettings } = await import("../lib/tavily.js");
+    expect(TAVILY_DEFAULTS.maxResults).toBe(5);
+    expect(validateTavilyApiKey("tvly-" + "a".repeat(32))).toBeNull();
+    expect(resolveTavilySettings({ maxResults: 3 }).maxResults).toBe(3);
+  });
 });

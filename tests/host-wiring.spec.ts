@@ -45,7 +45,12 @@ function mockCtx(options: MockOptions = {}) {
     events: string[];
   } = { routes: [], events: [] };
   const settings = {
-    register: vi.fn(() => () => {}),
+    register: vi.fn(() => ({
+      get: () => options.stored ?? {},
+      watch: vi.fn(() => () => {}),
+      update: vi.fn(async () => {}),
+      replace: vi.fn(async () => {})
+    })),
     get: vi.fn(() => options.stored ?? {}),
     update: vi.fn(async (_ns: string, _patch: Record<string, unknown>) => {}),
     mutate: vi.fn(async (_ns: string, _ops: Array<Record<string, unknown>>) => {}),
@@ -89,7 +94,10 @@ function mockCtx(options: MockOptions = {}) {
       return () => {};
     }),
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    tools: { get: vi.fn(() => undefined) },
+    tools: {
+      get: vi.fn(() => undefined),
+      register: vi.fn(() => () => {})
+    },
     webServer: {
       register: vi.fn((entry: { path: string; handler: (req: unknown, res: unknown) => Promise<void> }) => {
         registrations.routes.push(entry);
@@ -732,5 +740,220 @@ describe("config route", () => {
     const vision = body.value.config.vision as Record<string, unknown>;
     expect(vision).not.toHaveProperty("apiKey");
     expect(vision.apiKeyConfigured).toBe(true);
+  });
+});
+
+describe("tavily search tool", () => {
+  /** The tavily_search definition registered by apply() (or undefined). */
+  function registeredTool(options: MockOptions = {}) {
+    const { ctx } = mockCtx(options);
+    apply(ctx, {});
+    const register = ctx.tools.register as ReturnType<typeof vi.fn>;
+    if (register.mock.calls.length === 0) return undefined;
+    return register.mock.calls[0][0] as {
+      name: string;
+      description: string;
+      parameters: {
+        type: string;
+        properties: Record<string, { type: string }>;
+        required?: string[];
+      };
+      output: { schema: Record<string, unknown>; render: (args: unknown, value: unknown) => unknown[] };
+      execute: (args: { query: string }, exec: { signal: AbortSignal }) => Promise<Record<string, unknown>>;
+    };
+  }
+
+  it("registers tavily_search when ext-center.tavily.enabled is true", () => {
+    const tool = registeredTool({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
+    expect(tool).toBeTruthy();
+    expect(tool!.name).toBe("tavily_search");
+    expect(tool!.description).toContain("Tavily");
+    expect(tool!.parameters.type).toBe("object");
+    expect(tool!.parameters.properties.query?.type).toBe("string");
+    expect(tool!.parameters.required).toContain("query");
+    expect(tool!.output.schema.type).toBe("object");
+    expect(typeof tool!.execute).toBe("function");
+  });
+
+  it("does not register tavily_search while the master switch is off", () => {
+    const tool = registeredTool({ stored: { tavily: { enabled: false, apiKey: "tvly-" + "a".repeat(32) } } });
+    expect(tool).toBeUndefined();
+  });
+
+  it("executes a Tavily search and maps the response", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({
+        answer: "A summary.",
+        results: [{ title: "A", url: "https://a.example", content: "snippet", score: 0.9 }]
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = registeredTool({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
+      const result = await tool!.execute({ query: "deepseek news" }, { signal: new AbortController().signal });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe("https://api.tavily.com/search");
+      const init = fetchMock.mock.calls[0][1] as { headers: Record<string, string>; body: string };
+      expect(init.headers.authorization).toBe("Bearer " + "tvly-" + "a".repeat(32));
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      expect(body.query).toBe("deepseek news");
+      expect(body.search_depth).toBe("basic");
+      expect(body.max_results).toBe(5);
+      expect(body.include_raw_content).toBe(false);
+      expect(body.include_answer).toBe(true);
+      expect(result).toEqual({
+        content: "A summary.",
+        sources: [{ url: "https://a.example", title: "A", snippet: "snippet" }],
+        truncated: false
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("passes search depth and raw-content settings through to the API", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, json: async () => ({ results: [{ url: "https://a.example", raw_content: "<p>raw</p>" }] }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = registeredTool({
+        stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32), searchDepth: "advanced", maxResults: 3, includeRaw: true } }
+      });
+      const result = await tool!.execute({ query: "q" }, { signal: new AbortController().signal });
+      const body = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as Record<string, unknown>;
+      expect(body.search_depth).toBe("advanced");
+      expect(body.max_results).toBe(3);
+      expect(body.include_raw_content).toBe(true);
+      expect(result.sources).toEqual([{ url: "https://a.example", rawContent: "<p>raw</p>" }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("fails loudly (not blocking) when Tavily is disabled at execution time", async () => {
+    // The tool is registered while enabled, then the master switch flips off
+    // before the call — the execution-time gate must reject with a clear
+    // message instead of searching.
+    const stored = { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } };
+    const tool = registeredTool({ stored });
+    stored.tavily.enabled = false;
+    await expect(tool!.execute({ query: "q" }, { signal: new AbortController().signal })).rejects.toThrow(/disabled/);
+  });
+
+  it("fails loudly when the API key is missing at execution time", async () => {
+    const stored = { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } };
+    const tool = registeredTool({ stored });
+    stored.tavily.apiKey = "";
+    await expect(tool!.execute({ query: "q" }, { signal: new AbortController().signal })).rejects.toThrow(/no API key/);
+  });
+
+  it("maps API errors to a clear message", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: false, status: 401, json: async () => ({ error: "invalid api key" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = registeredTool({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
+      await expect(tool!.execute({ query: "q" }, { signal: new AbortController().signal })).rejects.toThrow(/HTTP 401/);
+      await expect(tool!.execute({ query: "q" }, { signal: new AbortController().signal })).rejects.toThrow(/invalid api key/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("surfaces network failures instead of crashing", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => { throw new Error("ECONNREFUSED"); });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = registeredTool({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
+      await expect(tool!.execute({ query: "q" }, { signal: new AbortController().signal })).rejects.toThrow(/ECONNREFUSED/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("config route (tavily)", () => {
+  async function mountedConfigHandler(stored: Record<string, unknown> = {}) {
+    const { ctx, settings } = mockCtx({ stored });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    return {
+      settings,
+      handler: register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>
+    };
+  }
+
+  it("stores a validated tavily patch with the trimmed key", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", {
+      tavily: { enabled: true, searchDepth: "advanced", maxResults: 7, includeRaw: true, apiKey: "  tvly-" + "a".repeat(32) + "  " }
+    }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{
+      op: "set",
+      path: ["tavily"],
+      value: { enabled: true, searchDepth: "advanced", maxResults: 7, includeRaw: true, apiKey: "tvly-" + "a".repeat(32) }
+    }]);
+  });
+
+  it("rejects an invalid search depth", async () => {
+    const { handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { tavily: { searchDepth: "ultra" } }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
+  });
+
+  it("rejects maxResults outside 1-10", async () => {
+    const { handler } = await mountedConfigHandler();
+    for (const maxResults of [0, 11, 3.5]) {
+      const res = fakeRes();
+      await handler(fakeReqWithBody("POST", "/ext/api/config", { tavily: { maxResults } }), res);
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("bad-request");
+    }
+  });
+
+  it("rejects a malformed API key format", async () => {
+    const { handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { tavily: { enabled: true, apiKey: "sk-not-tavily" } }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
+    expect(body.error.message).toMatch(/tvly-/);
+  });
+
+  it("drops a blank apiKey so the stored key is kept", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { tavily: { enabled: true, apiKey: "   " } }), res);
+    const ops = settings.mutate.mock.calls[0][1] as Array<{ value: Record<string, unknown> }>;
+    expect(ops[0].value).not.toHaveProperty("apiKey");
+    expect(JSON.parse(res.end.mock.calls[0][0]).ok).toBe(true);
+  });
+
+  it("resets the whole tavily section", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", { reset: ["tavily"] }), res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{ op: "unset", path: ["tavily"] }]);
+  });
+
+  it("never echoes the stored tavily apiKey through /ext/api/state", async () => {
+    const { ctx } = mockCtx({ stored: { tavily: { enabled: true, apiKey: "tvly-secret-1234567890" } } });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReq("GET", "/ext/api/state", "127.0.0.1"), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(true);
+    const tavily = body.value.config.tavily as Record<string, unknown>;
+    expect(tavily).not.toHaveProperty("apiKey");
+    expect(tavily.apiKeyConfigured).toBe(true);
   });
 });
