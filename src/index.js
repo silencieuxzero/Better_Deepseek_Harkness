@@ -192,6 +192,7 @@ const DEFAULTS = Object.freeze({
     provider: "",
     model: "",
     prompt: "",
+    apiUrl: "",
     maxImages: 4
   })
 });
@@ -302,6 +303,7 @@ const SettingsSchema = z.object({
     provider: z.string().default(""),
     model: z.string().default(""),
     prompt: z.string().default(""),
+    apiUrl: z.string().default(DEFAULTS.vision.apiUrl),
     maxImages: z.number().default(DEFAULTS.vision.maxImages)
   }).default({ ...DEFAULTS.vision })
 });
@@ -1648,6 +1650,7 @@ function visionConfigOf(config, cfg) {
     provider: typeof raw.provider === "string" ? raw.provider.trim() : "",
     model: typeof raw.model === "string" ? raw.model.trim() : "",
     prompt: typeof raw.prompt === "string" && raw.prompt.trim() !== "" ? raw.prompt.trim() : VISION_DEFAULT_PROMPT,
+    apiUrl: typeof raw.apiUrl === "string" ? raw.apiUrl.trim() : "",
     maxImages
   };
 }
@@ -1664,7 +1667,12 @@ function isVisionRoute(options, vision) {
 
 /** Whether one request needs image transcription under the configured profile. */
 function needsTranscription(options, vision) {
-  if (!vision.enabled || vision.provider === "" || vision.model === "") return false;
+  if (!vision.enabled || vision.model === "") return false;
+  if (vision.provider === "custom") {
+    if (vision.apiUrl === "") return false;
+  } else if (vision.provider === "") {
+    return false;
+  }
   if (isVisionRoute(options, vision)) return false;
   return (options.messages || []).some((message) => contentHasImageBlocks(message.content));
 }
@@ -1677,6 +1685,71 @@ async function collectStreamText(stream) {
     else if (chunk.type === "finish") break;
   }
   return text.trim();
+}
+
+/** Custom vision routes must be real http(s) endpoints (OpenAI-compatible). */
+const CUSTOM_VISION_URL_RE = /^https?:\/\//i;
+
+/** Normalize a user-entered API URL into an OpenAI-compatible chat/completions URL. */
+function customVisionEndpoint(apiUrl) {
+  const trimmed = apiUrl.trim().replace(/\/+$/, "");
+  if (trimmed.endsWith("/chat/completions")) return trimmed;
+  return trimmed + "/chat/completions";
+}
+
+/** Read one image attachment back as a data URL for a custom vision endpoint. */
+async function imageDataUrl(ctx, attachment, signal) {
+  let attachments;
+  try {
+    attachments = ctx.get("attachments");
+  } catch { /* the attachment service is optional in this deployment */ }
+  if (!attachments || typeof attachments.readImage !== "function") {
+    throw new Error("attachment service is unavailable");
+  }
+  const stored = await attachments.readImage(attachment, signal);
+  const mediaType = stored?.ref?.mediaType || "image/png";
+  return `data:${mediaType};base64,${Buffer.from(stored.data).toString("base64")}`;
+}
+
+/** One transcription call against a user-supplied OpenAI-compatible endpoint. */
+async function customVisionText(ctx, vision, imageBlock, maxTokens, signal) {
+  const endpoint = customVisionEndpoint(vision.apiUrl);
+  if (!CUSTOM_VISION_URL_RE.test(endpoint)) {
+    throw new Error("vision API URL must start with http:// or https://");
+  }
+  const dataUrl = await imageDataUrl(ctx, imageBlock.attachment, signal);
+  let res;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: vision.model,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: vision.prompt },
+            { type: "image_url", image_url: { url: dataUrl } }
+          ]
+        }],
+        max_tokens: maxTokens,
+        stream: false
+      }),
+      signal: signal ?? AbortSignal.timeout(120_000)
+    });
+  } catch (error) {
+    throw new Error("custom vision request failed: " + (error?.message ?? String(error)));
+  }
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => "")).slice(0, 300);
+    throw new Error(`custom vision endpoint returned HTTP ${res.status}${detail ? ": " + detail : ""}`);
+  }
+  const json = await res.json().catch(() => null);
+  const content = json?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || content.trim() === "") {
+    throw new Error("custom vision endpoint returned no text content");
+  }
+  return content.trim();
 }
 
 /** One transcription call: the vision prompt plus a single image block. */
@@ -1717,7 +1790,7 @@ function rewriteContent(content, replacements) {
  * the configured vision route, then return the rewritten request. Failures
  * degrade to placeholder text instead of breaking the turn.
  */
-async function transcribeRequest(llm, options, vision, cfg) {
+async function transcribeRequest(ctx, llm, options, vision, cfg) {
   const replacements = new Map();
   let seen = 0;
   for (const message of options.messages) {
@@ -1736,13 +1809,18 @@ async function transcribeRequest(llm, options, vision, cfg) {
       if (seen > vision.maxImages) {
         text = "[图片转述：超出单次请求上限（" + vision.maxImages + " 张），此图片未转述]";
       } else {
-        const request = buildVisionRequest(vision, image, options.sessionId, options.signal, cfg.vision.maxTokens);
         try {
-          const stream = await llm.stream(request);
-          const described = await collectStreamText(stream);
-          text = described === "" ? "[图片转述：视觉模型未返回内容]" : "[图片转述（" + vision.provider + " / " + vision.model + "）]：\n" + described;
+          let described;
+          if (vision.provider === "custom") {
+            described = await customVisionText(ctx, vision, image, cfg.vision.maxTokens, options.signal);
+          } else {
+            const request = buildVisionRequest(vision, image, options.sessionId, options.signal, cfg.vision.maxTokens);
+            const stream = await llm.stream(request);
+            described = await collectStreamText(stream);
+          }
+          text = described === "" ? "[图片转述：视觉模型未返回内容]" : "[图片转述（" + (vision.provider === "custom" ? "自定义" : vision.provider) + " / " + vision.model + "）]：\n" + described;
         } catch (error) {
-          text = "[图片转述失败（" + vision.provider + " / " + vision.model + "）：" + (error && error.message ? error.message : String(error)) + "]";
+          text = "[图片转述失败（" + (vision.provider === "custom" ? "自定义" : vision.provider) + " / " + vision.model + "）：" + (error && error.message ? error.message : String(error)) + "]";
         }
       }
       replacements.set(image, text);
@@ -1777,7 +1855,7 @@ function registerVisionListener(ctx, configOf, cfg) {
       } catch { /* the llm service is optional in this deployment */ }
       if (!llm || typeof llm.stream !== "function") return next();
       return (async function* () {
-        const rewritten = await transcribeRequest(llm, options, vision, cfg);
+        const rewritten = await transcribeRequest(ctx, llm, options, vision, cfg);
         yield* llm.stream(rewritten);
       })();
     }, { global: true });

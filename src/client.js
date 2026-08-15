@@ -203,11 +203,14 @@ window.__ModuleLoader__.load({
 			visionIntro: "当会话模型不支持图片时，先用下面的视觉模型把图片转述成文字，再交给主模型。启用后，含图片的请求会自动转述；会话记录中的原始图片不受影响。",
 			visionEnabled: "启用图片转述",
 			visionProvider: "转述模型提供方",
-			visionProviderHint: "从已注册的提供方路由中选择；不在列表时可留自定义路由",
+			visionProviderHint: "从已注册的提供方路由中选择；选择「自定义路由」后直接填写 OpenAI 兼容 API 地址",
+			visionProviderCustom: "自定义路由",
 			visionModel: "转述模型",
 			visionModelHint: "必须是支持图片输入的多模态模型",
 			visionPrompt: "转述提示词",
 			visionPromptHint: "发给视觉模型的指令；留空使用内置提示词",
+			visionApiUrl: "自定义 API URL",
+			visionApiUrlHint: "OpenAI 兼容的 chat/completions 地址；例如 https://api.example.com/v1/chat/completions",
 			visionMaxImages: "单次转述图片上限",
 			visionMaxImagesHint: "1-{n}；超出部分以占位文本代替",
 			visionNote: "转述在模型调用前发生（llm/stream 包装），仅替换本次请求中的图片块。",
@@ -395,11 +398,14 @@ window.__ModuleLoader__.load({
 			visionIntro: "When the session model cannot see images, describe them with the vision model below before the main model reads them. Once enabled, requests carrying images are transcribed automatically; the original images in the session log are untouched.",
 			visionEnabled: "Enable image transcription",
 			visionProvider: "Transcription provider",
-			visionProviderHint: "Pick a registered provider route; type a custom route when it is not listed",
+			visionProviderHint: "Pick a registered provider route, or choose Custom endpoint and enter an OpenAI-compatible API URL",
+			visionProviderCustom: "Custom endpoint",
 			visionModel: "Transcription model",
 			visionModelHint: "Must be a multimodal model that accepts image input",
 			visionPrompt: "Transcription prompt",
 			visionPromptHint: "Instruction sent to the vision model; empty uses the built-in prompt",
+			visionApiUrl: "Custom API URL",
+			visionApiUrlHint: "OpenAI-compatible chat/completions URL, e.g. https://api.example.com/v1/chat/completions",
 			visionMaxImages: "Max images per request",
 			visionMaxImagesHint: "1-{n}; extra images become placeholder text",
 			visionNote: "Transcription wraps llm/stream and only rewrites the image blocks of the current request.",
@@ -756,6 +762,7 @@ window.__ModuleLoader__.load({
 					visionProvider: typeof vision.provider === "string" ? vision.provider : "",
 					visionModel: typeof vision.model === "string" ? vision.model : "",
 					visionPrompt: typeof vision.prompt === "string" ? vision.prompt : "",
+					visionApiUrl: typeof vision.apiUrl === "string" ? vision.apiUrl : "",
 					visionMaxImages: Number(vision.maxImages) > 0 ? String(Math.round(Number(vision.maxImages))) : ""
 				});
 			}, [ready, draft, state]);
@@ -777,9 +784,10 @@ window.__ModuleLoader__.load({
 					provider: draft.visionProvider.trim(),
 					model: draft.visionModel.trim(),
 					prompt: draft.visionPrompt.trim(),
+					apiUrl: draft.visionApiUrl.trim(),
 					maxImages: draft.visionMaxImages.trim() === "" ? 4 : Math.min(Math.max(parseInt(draft.visionMaxImages, 10) || 4, 1), limits.visionMaxImagesCap)
 				};
-				if (visionDraft.enabled !== (visionValue.enabled === true) || visionDraft.provider !== (visionValue.provider || "") || visionDraft.model !== (visionValue.model || "") || visionDraft.prompt !== (visionValue.prompt || "") || visionDraft.maxImages !== (Number(visionValue.maxImages) || 4)) {
+				if (visionDraft.enabled !== (visionValue.enabled === true) || visionDraft.provider !== (visionValue.provider || "") || visionDraft.model !== (visionValue.model || "") || visionDraft.prompt !== (visionValue.prompt || "") || visionDraft.apiUrl !== (visionValue.apiUrl || "") || visionDraft.maxImages !== (Number(visionValue.maxImages) || 4)) {
 					patch.vision = visionDraft;
 				}
 				if (Object.keys(patch).length === 0) {
@@ -810,7 +818,8 @@ window.__ModuleLoader__.load({
 			}, [ready, t]);
 			var visionOptions = providers.map(function (p) { return { value: p.id, label: (p.name && p.name !== p.id ? p.name + " · " : "") + p.id }; });
 			visionOptions.unshift({ value: "", label: "—" });
-			if (draft !== null && draft.visionProvider !== "" && !visionOptions.some(function (o) { return o.value === draft.visionProvider; })) {
+			visionOptions.push({ value: "custom", label: t("visionProviderCustom") });
+			if (draft !== null && draft.visionProvider !== "" && draft.visionProvider !== "custom" && !visionOptions.some(function (o) { return o.value === draft.visionProvider; })) {
 				visionOptions.push({ value: draft.visionProvider, label: draft.visionProvider + " " + t("visionCustom") });
 			}
 			return jsxs("div", { className: "extc-panel", children: [
@@ -846,6 +855,7 @@ window.__ModuleLoader__.load({
 							jsx("span", { children: draft.visionEnabled ? t("pluginEnabled") : t("pluginDisabled") })
 						] }) }),
 						jsx(Field, { label: t("visionProvider"), hint: t("visionProviderHint"), children: jsx(Select, { value: draft.visionProvider, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionProvider: value })); }, options: visionOptions }) }),
+						draft.visionProvider === "custom" ? jsx(Field, { label: t("visionApiUrl"), hint: t("visionApiUrlHint"), children: jsx(TextInput, { value: draft.visionApiUrl, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionApiUrl: value })); } }) }) : null,
 						jsx(Field, { label: t("visionModel"), hint: t("visionModelHint"), children: jsx(TextInput, { value: draft.visionModel, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionModel: value })); } }) }),
 						jsx(Field, { label: t("visionPrompt"), hint: t("visionPromptHint"), children: jsx(TextArea, { value: draft.visionPrompt, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionPrompt: value })); }, rows: 3 }) }),
 						jsx(Field, { label: t("visionMaxImages"), hint: t("visionMaxImagesHint").replace("{n}", String(limits.visionMaxImagesCap)), children: jsx(TextInput, { value: draft.visionMaxImages, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionMaxImages: value })); } }) }),

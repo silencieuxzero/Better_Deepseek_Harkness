@@ -13,6 +13,8 @@ interface MockOptions {
   stored?: Record<string, unknown>;
   /** value returned for ctx.get("llm") (defaults to undefined). */
   llm?: { stream: (options: unknown) => AsyncIterable<unknown> } | undefined;
+  /** value returned for ctx.get("attachments") (defaults to undefined). */
+  attachments?: { readImage: (ref: unknown, signal?: unknown) => Promise<{ ref: { mediaType: string }, data: Uint8Array }> } | undefined;
   /** when true, ctx.inject stores the callback instead of running it now. */
   deferInject?: boolean;
 }
@@ -38,6 +40,7 @@ function mockCtx(options: MockOptions = {}) {
       if (name === "settings") return settings;
       if (name === "skills") return skills;
       if (name === "llm") return options.llm;
+      if (name === "attachments") return options.attachments;
       return undefined;
     }),
     inject: vi.fn((names: string[], callback: (child: unknown) => void) => {
@@ -143,7 +146,7 @@ describe("apply() wiring", () => {
 
 describe("llm/stream image transcription wrapper", () => {
   /** Capture the registered llm/stream listener from a fresh apply(). */
-  function captureListener(options: { stored?: Record<string, unknown>; llm?: { stream: (options: unknown) => AsyncIterable<unknown> } } = {}) {
+  function captureListener(options: MockOptions = {}) {
     const { ctx } = mockCtx(options);
     apply(ctx, {});
     const call = (ctx.on as ReturnType<typeof vi.fn>).mock.calls.find((args: unknown[]) => args[0] === "llm/stream");
@@ -194,6 +197,44 @@ describe("llm/stream image transcription wrapper", () => {
     expect(content.some((block) => block.type === "text" && block.text?.includes("一张猫的图片"))).toBe(true);
     expect(chunks.length).toBeGreaterThan(0);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("transcribes through a user-supplied custom vision endpoint", async () => {
+    const calls: unknown[][] = [];
+    const llm = {
+      stream: vi.fn((options: unknown) => {
+        calls.push(options as unknown[]);
+        return streamOf([{ type: "finish", reason: { kind: "ok" } }]);
+      })
+    };
+    const readImage = vi.fn(async () => ({ ref: { mediaType: "image/png" }, data: new Uint8Array([1, 2, 3]) }));
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "一张自定义路由的图片" } }] })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const listener = captureListener({
+        stored: { vision: { enabled: true, provider: "custom", model: "custom-vlm", apiUrl: "http://vision.test/v1/chat/completions" } },
+        llm,
+        attachments: { readImage }
+      });
+      const next = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+      const result = listener(
+        { provider: "main", model: "m", messages: [{ role: "user", content: [{ type: "image", attachment: { attachmentId: "a1" } }] }] },
+        next
+      );
+      for await (const chunk of result as AsyncIterable<unknown>) void chunk;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe("http://vision.test/v1/chat/completions");
+      const rewritten = calls[0] as unknown as {
+        messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+      };
+      expect(rewritten.messages[0].content.some((block) => block.type === "text" && block.text?.includes("一张自定义路由的图片"))).toBe(true);
+      expect(next).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("forwards next() untouched when transcription is disabled or the route matches", async () => {
