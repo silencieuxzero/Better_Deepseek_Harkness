@@ -218,6 +218,8 @@ window.__ModuleLoader__.load({
 			visionApiKeyUnset: "未配置",
 			visionMaxImages: "单次转述图片上限",
 			visionMaxImagesHint: "1-{n}；超出部分以占位文本代替",
+			visionMaxTokens: "转述输出上限（tokens）",
+			visionMaxTokensHint: "64-8192；留空使用部署默认值",
 			visionNote: "转述在模型调用前发生（llm/stream 包装），仅替换本次请求中的图片块。",
 			visionCustom: "（自定义）",
 			optimizeTitle: "优化输入",
@@ -431,6 +433,8 @@ window.__ModuleLoader__.load({
 			visionApiKeyUnset: "Not configured",
 			visionMaxImages: "Max images per request",
 			visionMaxImagesHint: "1-{n}; extra images become placeholder text",
+			visionMaxTokens: "Transcription output limit (tokens)",
+			visionMaxTokensHint: "64-8192; leave empty for the deployment default",
 			visionNote: "Transcription wraps llm/stream and only rewrites the image blocks of the current request.",
 			visionCustom: "(custom)",
 			optimizeTitle: "Optimize input",
@@ -471,6 +475,7 @@ window.__ModuleLoader__.load({
 			mcpMaxServers: 16,
 			gitLogMax: 30,
 			visionMaxImagesCap: 8,
+			visionMaxTokens: 1024,
 			terminalPollMs: 300,
 			terminalListPollMs: 2000,
 			gitPollMs: 5000,
@@ -802,7 +807,8 @@ window.__ModuleLoader__.load({
 					// The key is write-only: the draft always starts blank and
 					// only a non-empty entry updates the stored key.
 					visionApiKey: "",
-					visionMaxImages: Number(vision.maxImages) > 0 ? String(Math.round(Number(vision.maxImages))) : ""
+					visionMaxImages: Number(vision.maxImages) > 0 ? String(Math.round(Number(vision.maxImages))) : "",
+					visionMaxTokens: Number(vision.maxTokens) > 0 ? String(Math.round(Number(vision.maxTokens))) : ""
 				});
 			}, [ready, draft, state]);
 			var save = useCallback(function () {
@@ -824,12 +830,17 @@ window.__ModuleLoader__.load({
 					model: draft.visionModel.trim(),
 					prompt: draft.visionPrompt.trim(),
 					apiUrl: draft.visionApiUrl.trim(),
-					maxImages: draft.visionMaxImages.trim() === "" ? 4 : Math.min(Math.max(parseInt(draft.visionMaxImages, 10) || 4, 1), limits.visionMaxImagesCap)
+					maxImages: draft.visionMaxImages.trim() === "" ? 4 : Math.min(Math.max(parseInt(draft.visionMaxImages, 10) || 4, 1), limits.visionMaxImagesCap),
+					maxTokens: draft.visionMaxTokens.trim() === "" ? void 0 : Math.min(Math.max(parseInt(draft.visionMaxTokens, 10) || 0, 64), 8192)
 				};
 				// A non-empty key entry updates the stored key; an empty entry
 				// (the usual state — the key never renders back) means "keep".
 				if (draft.visionApiKey.trim() !== "") visionDraft.apiKey = draft.visionApiKey.trim();
-				if (visionDraft.enabled !== (visionValue.enabled === true) || visionDraft.provider !== (visionValue.provider || "") || visionDraft.model !== (visionValue.model || "") || visionDraft.prompt !== (visionValue.prompt || "") || visionDraft.apiUrl !== (visionValue.apiUrl || "") || visionDraft.maxImages !== (Number(visionValue.maxImages) || 4) || ("apiKey" in visionDraft)) {
+				var visionChanged = visionDraft.enabled !== (visionValue.enabled === true) || visionDraft.provider !== (visionValue.provider || "") || visionDraft.model !== (visionValue.model || "") || visionDraft.prompt !== (visionValue.prompt || "") || visionDraft.apiUrl !== (visionValue.apiUrl || "") || visionDraft.maxImages !== (Number(visionValue.maxImages) || 4) || ("apiKey" in visionDraft) || (visionDraft.maxTokens !== void 0 && visionDraft.maxTokens !== (Number(visionValue.maxTokens) || limits.visionMaxTokens));
+				if (visionChanged) {
+					// maxTokens is a user override of the deployment default;
+					// an empty draft keeps whatever is stored (no key at all).
+					if (visionDraft.maxTokens === void 0) delete visionDraft.maxTokens;
 					patch.vision = visionDraft;
 				}
 				if (Object.keys(patch).length === 0) {
@@ -908,6 +919,7 @@ window.__ModuleLoader__.load({
 						jsx(Field, { label: t("visionModel"), hint: t("visionModelHint"), children: jsx(TextInput, { value: draft.visionModel, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionModel: value })); } }) }),
 						jsx(Field, { label: t("visionPrompt"), hint: t("visionPromptHint"), children: jsx(TextArea, { value: draft.visionPrompt, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionPrompt: value })); }, rows: 3 }) }),
 						jsx(Field, { label: t("visionMaxImages"), hint: t("visionMaxImagesHint").replace("{n}", String(limits.visionMaxImagesCap)), children: jsx(TextInput, { value: draft.visionMaxImages, disabled: !writable || busy, onChange: function (value) { setDraft(Object.assign({}, draft, { visionMaxImages: value })); } }) }),
+						jsx(Field, { label: t("visionMaxTokens"), hint: t("visionMaxTokensHint"), children: jsx("input", { type: "number", min: 64, max: 8192, step: 64, className: "extc-input", value: draft.visionMaxTokens, disabled: !writable || busy, onChange: function (event) { setDraft(Object.assign({}, draft, { visionMaxTokens: event.target.value })); } }) }),
 						jsx("p", { className: "extc-empty", children: t("visionNote") }),
 						jsxs("div", { className: "extc-actions", children: [
 							jsx(Button, { primary: true, busy: busy, disabled: !writable, onClick: save, children: t("save") }),

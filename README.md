@@ -35,7 +35,7 @@
   - 提交历史：最近提交（条数可配置，默认 30；短哈希 / 作者 / 时间 / 主题）
   - 状态自动刷新（间隔可配置，默认 5 秒）；仓库自动从文件树根向上查找 .git；所有操作由主机侧 git 子进程执行（GIT_TERMINAL_PROMPT=0，防挂起）
 - **MCP 服务器**：设置页新增「MCP」页签——添加自定义 MCP 服务器（stdio 本地命令 / streamable-http 远程 URL，支持参数、环境变量、工作目录、请求头、调用超时）；每个服务器写为 cordis.patch.yml 中的一行 `@deepseek-ai/dsh-mcp-client` 条目（id `ext-center.mcp.<名称>`），由配置监听器**热生效**；列表实时显示加载器状态（运行中/失败/已停用）并支持启用/停用/移除；服务器工具以 `mcp__<名称>__<工具名>` 提供给模型；手写的外部 MCP 行只读展示
-- **图片转述**：设置页新增「图片转述」配置——启用后，含图片的模型请求在进入文本模型前，先由用户指定的视觉模型（提供方 / 模型 / 提示词 / 单次上限 1-8，部署上限可配置）通过 `llm/stream` 瀑布包装转述成文字（仅替换本次请求中的图片块，会话记录原图不受影响）；转述失败自动降级为占位文本；主模型与转述模型同路由时原生图片直通；提供方下拉来自已注册的 LLM 路由（`/ext/api/state` 的 `llmProviders`），也可选择「自定义路由」并填写 OpenAI 兼容的 `chat/completions` API URL，由插件直接调用该端点转述图片；自定义路由支持配置 **API Key**（设置页密码输入框，仅写入不回显；留空保存保持原值），转述请求会携带 `Authorization: Bearer <key>` 头，`/ext/api/state` 只返回 `apiKeyConfigured` 布尔、不回传密钥本身。**启用开关 `ext-center.vision.enabled` 同时会解除宿主 api-gateway 的图片准入限制**：宿主在请求进入模型链路前会按当前模型的 `inputModalities` 拒绝不支持图片的模型（报 `MODEL_DOES_NOT_SUPPORT_IMAGES`），本插件在开关开启时把当前模型宣告为支持图片输入（包装 `llm.resolveModelInfo`，仅追加 `image` 模态），请求才能到达上述转述瀑布；开关关闭时不做任何改动，保持宿主原生校验行为
+- **图片转述**：设置页新增「图片转述」配置——启用后，含图片的模型请求在进入文本模型前，先由用户指定的视觉模型（提供方 / 模型 / 提示词 / 单次上限 1-8，部署上限可配置）通过 `llm/stream` 瀑布包装转述成文字（仅替换本次请求中的图片块，会话记录原图不受影响）；转述失败自动降级为占位文本；主模型与转述模型同路由时原生图片直通；提供方下拉来自已注册的 LLM 路由（`/ext/api/state` 的 `llmProviders`），也可选择「自定义路由」并填写 OpenAI 兼容的 `chat/completions` API URL，由插件直接调用该端点转述图片；自定义路由支持配置 **API Key**（设置页密码输入框，仅写入不回显；留空保存保持原值），转述请求会携带 `Authorization: Bearer <key>` 头，`/ext/api/state` 只返回 `apiKeyConfigured` 布尔、不回传密钥本身；「转述输出上限（tokens）」可在设置页调整（64-8192，留空使用部署默认 `vision.maxTokens`，推理模型可适当调大）。**启用开关 `ext-center.vision.enabled` 同时会解除宿主 api-gateway 的图片准入限制**：宿主在请求进入模型链路前会按当前模型的 `inputModalities` 拒绝不支持图片的模型（报 `MODEL_DOES_NOT_SUPPORT_IMAGES`），本插件在开关开启时把当前模型宣告为支持图片输入（包装 `llm.resolveModelInfo`，仅追加 `image` 模态），请求才能到达上述转述瀑布；开关关闭时不做任何改动，保持宿主原生校验行为
 - **优化输入**：会话输入框右下角（发送按钮与上下文按钮之间）新增「优化输入」按钮（星星图标）；点击后用当前会话所选模型对输入进行优化，优化结果直接回填到输入框，便于发送前润色 prompt
 - **工具参数自动修复**：通过 `tools/execute` 包装层修复模型偶发的参数抖动——`description` 缺失 / 为空 / 类型错误时自动补上中性占位符；`arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象，避免无谓的 `INVALID_ARGS` 报错
 
@@ -114,7 +114,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
           maxServers: 16          # 面板管理的 MCP 服务器上限
         vision:
           maxImagesCap: 8         # 单次请求转述图片的部署上限（设置页的 1-N 以此为界）
-          maxTokens: 1024         # 单次转述调用的输出 token 上限
+          maxTokens: 1024         # 单次转述输出的默认 token 上限（设置页「转述输出上限」可覆盖，64-8192）
         toolRepair:
           enabled: true           # tools/execute 参数修复总开关
           descriptionFill: "Execute tool"   # description 缺失时的中性占位文案

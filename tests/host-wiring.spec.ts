@@ -247,7 +247,8 @@ describe("llm/stream image transcription wrapper", () => {
             provider: "custom",
             model: "custom-vlm",
             apiUrl: "http://vision.test/v1/chat/completions",
-            apiKey: "sk-test-123"
+            apiKey: "sk-test-123",
+            maxTokens: 2048
           }
         },
         llm,
@@ -261,8 +262,9 @@ describe("llm/stream image transcription wrapper", () => {
       for await (const chunk of result as AsyncIterable<unknown>) void chunk;
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(fetchMock.mock.calls[0][0]).toBe("http://vision.test/v1/chat/completions");
-      const init = fetchMock.mock.calls[0][1] as { headers: Record<string, string> };
+      const init = fetchMock.mock.calls[0][1] as { headers: Record<string, string>; body: string };
       expect(init.headers.authorization).toBe("Bearer sk-test-123");
+      expect(JSON.parse(init.body).max_tokens).toBe(2048);
       const rewritten = calls[0] as unknown as {
         messages: Array<{ content: Array<{ type: string; text?: string }> }>;
       };
@@ -690,6 +692,28 @@ describe("config route", () => {
     const res = fakeRes();
     await handler(fakeReqWithBody("POST", "/ext/api/config", {
       vision: { enabled: true, provider: "custom", apiKey: "sk-\0-bad" }
+    }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
+  });
+
+  it("stores a vision maxTokens user override", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", {
+      vision: { enabled: true, provider: "custom", model: "vm", apiUrl: "http://x.test", maxTokens: 2048 }
+    }), res);
+    const ops = settings.mutate.mock.calls[0][1] as Array<{ value: Record<string, unknown> }>;
+    expect(ops[0].value.maxTokens).toBe(2048);
+    expect(JSON.parse(res.end.mock.calls[0][0]).ok).toBe(true);
+  });
+
+  it("rejects a vision maxTokens outside 64-8192", async () => {
+    const { handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", {
+      vision: { enabled: true, provider: "custom", maxTokens: 9000 }
     }), res);
     const body = JSON.parse(res.end.mock.calls[0][0]);
     expect(body.ok).toBe(false);
