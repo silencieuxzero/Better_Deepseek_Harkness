@@ -5,7 +5,7 @@ better-deepseek-harness 是一个独立的 DeepSeek Harness 插件仓库（不�
 ## 仓库布局
 
 ```
-src/       源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts（纯逻辑，唯一完整 TS）
+src/       源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts / ansi.ts / tavily.ts / terminal-buffer.ts / rescue.ts（纯逻辑 TS）
 tests/     vitest 规格（*.spec.ts）
 docs/      架构与开发文档
 lib/       构建产物（npm run build 生成；提交进 git，安装免构建）
@@ -40,4 +40,4 @@ npm run check        # typecheck + test
 
 ## 渐进式 TypeScript
 
-`src/tool-args.ts` 是完整 TypeScript（strict 通过）；`src/index.js` 与 `src/client.js` 是带 JSDoc 的 JS，`checkJs` 未开启。新增代码写 `.ts`；存量迁移路径见 docs/development.md。
+`src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts`、`src/terminal-buffer.ts` 与 `src/rescue.ts` 是完整 TypeScript（strict 通过）；`src/index.js` 与 `src/client.js` 是带 JSDoc 的 JS，`checkJs` 未开启。新增代码写 `.ts`；存量迁移路径见 docs/development.md。

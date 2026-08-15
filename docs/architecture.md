@@ -8,9 +8,9 @@
 
 | 半 | 文件 | 运行环境 | 职责 |
 | --- | --- | --- | --- |
-| 宿主侧 | `src/index.js` | dsh 主机进程（Node） | 设置命名空间、/ext/api 路由、技能/插件生命周期、文件树、终端、git、MCP、图片转述、工具参数修复 |
-| 客户端 | `src/client.js` | 浏览器（Web UI） | 设置页「更好的 DeepSeek Harness」区块、对话页「终端」「Git」页签、侧栏文件树 |
-| 纯逻辑 | `src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts`、`src/terminal-buffer.ts` | 宿主侧 | 模型工具参数的 JSON 恢复与 description 修补；终端 ANSI 转义序列的流式剥离；Tavily 设置/请求/响应纯函数；终端输出字节环与增量 offset 语义 |
+| 宿主侧 | `src/index.js` | dsh 主机进程（Node） | 设置命名空间、/ext/api 路由、技能/插件生命周期、文件树、终端、git、MCP、图片转述、工具参数修复、急救模式看门狗与宿主副作用 |
+| 客户端 | `src/client.js` | 浏览器（Web UI） | 设置页「更好的 DeepSeek Harness」区块、对话页「终端」「Git」页签、侧栏文件树、急救模式恢复对话框 |
+| 纯逻辑 | `src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts`、`src/terminal-buffer.ts`、`src/rescue.ts`、`src/compat.ts` | 宿主侧 | 模型工具参数的 JSON 恢复与 description 修补；终端 ANSI 转义序列的流式剥离；Tavily 设置/请求/响应纯函数；终端输出字节环与增量 offset 语义；急救模式状态机、启动问题检测、禁用/恢复计划；dsh-web-ui 家族注册表、存在性检测与界面让位映射 |
 
 `package.json` 的 `dsh` 字段声明了这个插件如何进入运行时：
 
@@ -33,7 +33,7 @@
 | 图片准入桥 | 包装 `ctx.llm.resolveModelInfo` | `vision.enabled` 时给当前模型信息追加 `image` 模态，通过宿主 api-gateway 的图片准入校验（`MODEL_DOES_NOT_SUPPORT_IMAGES`），让带图请求进入上面的 llm/stream 转述瀑布；关闭时原样返回 |
 | 工作区解析 | `ctx.workspaceRegistry` | 文件树根目录（未配置时的默认来源） |
 | 会话输入区 | `ctx.slots.inject("conversation.input.right", ...)` | 注册「优化输入」按钮；插槽渲染位置在上下文按钮左侧，因此真实 DOM 按钮由组件插入到发送按钮与上下文按钮之间；点击后经 `/ext/api/input/optimize` 用当前会话所选模型优化输入 |
-| 侧栏底部操作 | `ctx.slots.inject("sidebar.footer.action", ...)` | 注册「文件树」与「归档」两个底部动作；归档面板读取 `sessions` / `workspaces` 标准快照展示已归档会话，删除经 `/ext/api/archive/delete` 回到宿主侧 |
+| 侧栏底部操作 | `ctx.slots.inject("sidebar.footer.action", ...)` | 注册「文件树」与「归档」两个底部动作；归档面板读取 `sessions` / `workspaces` 标准快照展示已归档会话，删除经 `/ext/api/archive/delete` 回到宿主侧；另注册一个不可见的「急救模式」挂载点（`ext-center.rescue`，order 99）——组件本体不渲染任何按钮，只在宿主报告急救已生效时经 primitives 的 `Modal`（body portal）弹出全局对话框 |
 
 ### 路由表设计
 
@@ -46,17 +46,57 @@
 
 新增端点 = 往路由表加一行，不碰调度器。
 
+## dsh-web-ui 兼容补丁
+
+[dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui) 全家桶（`@linxin666/*` 系列）提供与本插件重叠的界面元素：右侧文件树与 SCM 面板（`@linxin666/dsh-client-ui-aionui-panel`）、分支选择器与 Git 图谱（`@linxin666/dsh-client-ui-git-graph`）、Web 终端面板（`@linxin666/dsh-ssh`）、图像理解（`@linxin666/dsh-tool-describe-image`）。元素冲突时本插件**不加载自身对应功能，只启用 dsh-web-ui 的功能**：
+
+| 本插件表面 | 被谁取代 |
+| --- | --- |
+| 侧栏文件树（`ext-center.tree`） | aionui-panel 文件树 |
+| 对话页「Git」页签（`ext-center.git`） | aionui-panel SCM / git-graph |
+| 对话页「终端」页签（`ext-center.terminal`） | dsh-ssh Web 终端 |
+| 宿主侧图片转述 + 视觉能力桥 | describe-image（其 send hook 在客户端改写带图发送，转述瀑布根本看不到图片块） |
+
+**检测规则**（`src/compat.ts` 纯函数）：按加载器条目 id（`ui-dsh-aionui-panel` / `ui-git-graph` / `ssh` / `describe-image`）或包名（`@linxin666/dsh-*`）匹配，且**只统计 ACTIVE（fiber state 2）且未禁用的条目**——全家桶插件 pending / 失败时它没有渲染任何元素，本插件保留自己的界面（fail-open）。两侧实现：
+
+- **宿主侧**：`createDshWebUiGate(ctx)` 在 `apply()` 时同步快照一次，并在加载器树收敛（`waitForLoaderSettled`，8s 上限）后复查一次——兄弟 bundle 在本插件 apply 时可能仍在 pending，晚到的激活也要让位。决定按调用时读取（`suppressed("vision")`），因此转述监听器与能力桥注册时机不变，只是内部先查门；describe-image 生效时两者原样放行（桥恢复 api-gateway 原生模态校验）。
+- **浏览器侧**：`src/client.js` 内联同一张家族表（bundle 无法 import TS，`tests/compat-client.spec.ts` 防漂移）。文件树 / Git / 终端三个 slot 注册放进一个延迟效应：等客户端加载器树收敛（同样 8s 上限、无加载器立即 fail-open）后，按抑制映射只注册不冲突的表面；其余表面（设置区块、急救弹窗、归档、优化输入）始终无条件注册。插件卸载时已注册的表面照常随效应释放。
+
+宿主侧保留自己的终端/git/文件树 API 端点（与全家桶的 `/git/*`、`/api/dsh-ssh/*` 互不干扰）；让位只针对界面元素与功能重叠面。安装全家桶发生在运行期时，客户端 bundle 本来就需要刷新页面才出现，刷新后门禁自然生效。
+
 ## 持久化与一致性
 
 - **cordis.patch.yml 是加载器树的唯一活源**：所有变更（插件安装/停用/卸载、MCP 行）都经同一个事务性写入器：解析 → 合并 → 临时文件 + rename 原子写，保留文件头注释，`!!js` 表达式（loader 配置方言）往返无损。连续写入串行化，避免配置监听器背靠背刷新。
 - **`.dsh-ext-center.json`** 是 profile 目录下的侧车状态文件：记录包来源与补丁行，卸载/停用时据此精确移除对应行。
+- **`.dsh-rescue.json`** 是急救模式的侧车状态文件（profile 目录下）：记录启动标记（pid / startedAt / healthy）、急救是否已生效（`phase: "applied"`）、触发原因与每个被禁用插件的名称与原因。每次启动写一个未定稿的 boot 记录，启动窗口（`rescue.settleMs`，默认 12s）过后无异常才标记 healthy；上一启动未定稿 = 启动失败，下一次启动据此进入急救模式。
 - 插件安装 = 包落到共享模块根 `~/.dsh/profiles/node_modules` → 合并其 bundle 补丁行（无补丁的包自动补 `{id, name}` 行）→ HMR 配置监听器事务性重放，条目即时挂载。
 - **Git 源构建回退**：`materializePackage` 对 git 源克隆后检查包声明的入口（`main` / `exports["."]`，见 `packageEntryPoints`）；入口缺失（仓库未提交构建产物，如 `lib/` 不存在）时自动执行 `npm install --no-audit --no-fund` 与 `npm run build`（`ensureBuiltPackage`，单步超时 10 分钟、输出只保留尾部 16 KiB，spawn 失败报 `build-tool-missing`，其余报 `build-failed` 并带输出尾部）。`npm install` 本身也会跑 `prepare` 钩子，所以只靠 `prepare` 出产物的仓库同样能恢复。构建成功与否经安装响应 `builtFromSource` 透出给客户端。npm / URL / folder 源不触发构建（发布产物理应已构建；folder 是用户本地目录，构建与否由用户负责）。
 - **归档删除**：`/ext/api/archive/delete` 跳过仍加载/运行中的会话，删除其余已归档会话日志（经 `sessionPersistence.locate` 定位到会话目录后移除），并尽力从工作区记账中 detach；Harness 当前公开面没有 unarchive/delete session RPC，因此该操作是永久删除。
 
+## 急救模式（rescue mode）
+
+DeepSeek Harness 的启动审计（`assertEntriesActivated`）把任何第三方插件的加载失败视为致命错误：启动直接失败退出，用户面对「failed to start」。急救模式让下一次启动变得确定：
+
+**触发条件**（全部在 `apply()` 的看门狗里检测，看门狗是 apply 的第一个动作）：
+
+1. **上次启动未完成**：`.dsh-rescue.json` 里的 boot 记录未在启动窗口内被标记 healthy（进程在启动阶段崩溃/退出）；
+2. **启动期第三方条目失败**：live loader 里第三方条目（名称不是本插件、不是 `@deepseek-ai/*`、不是 `cordis:*`）的 fiber 处于 failed / 无 fiber / 卡 pending（settle 检查才计入后两者，apply 时刻它们与「仍在加载」无法区分）；
+3. **重复的加载器条目 id**：补丁列表内或与第三方 bundle 层之间的 id 冲突（`duplicate loader entry id` 会让 loader 树在启动时崩溃）。
+
+**急救行为**：
+
+1. 除本插件外所有第三方插件默认全部禁用：patch 行原地加 `disabled: true`（无 `name` 的纯配置覆盖行、已禁用行、harness 核心行一律不碰）；第三方 profile bundle（`dsh.profile.bundles` 中非核心项）按其自身 `dsh.bundle.patch` 声明的行 id 追加 `{id, disabled: true}` 补丁行；
+2. 禁用写进 `cordis.patch.yml` 后由配置监听器**热生效**——运行中的树立即变成最小化配置，后续每次启动也直接按最小化配置组合。「以最小化配置重启」在桌面宿主下不杀进程：桌面 supervisor 把宿主意外退出视为整个应用退出，热生效即等价于最小化重启；裸 `dsh web`（无 supervisor）在用户确认恢复时才真正重启进程（`process.execPath` + 原 argv，detached + 400ms 后退出，先回响应）；
+3. 启动成功后客户端轮询 `/ext/api/rescue/status`（5s），`phase === "applied"` 时经 sidebar footer 挂载点弹出全局对话框：列出每个被禁用插件的名称与原因（fiber 失败时尽力抓取真实报错），可多选，提供「全部恢复」「保持禁用」「启用所选并重新加载」；
+4. 用户确认后 `POST /ext/api/rescue/apply { enable: [...] }` 事务性写回补丁（所选插件移除 disabled、其余保持禁用），状态清为 idle，然后按宿主形态刷新页面或重启进程；空选择 = 保持禁用、不重载。重启/刷新前把当前 boot 记为 healthy，避免「恢复 → 重启 → 又被判为启动失败」的循环；真正失败的下一启动仍会留下自己的未定稿标记，从而再次进入急救。
+
+**状态机**（`phase`）：`idle`（正常监控）→ `applied`（急救已生效，弹窗待决）→ 用户确认后回 `idle`。`applied` 状态下再次启动不会重复禁用（最小化配置已持久化），弹窗继续出现直到用户决定。手动触发走 `POST /ext/api/rescue/trigger`（插件页「进入急救模式」按钮），与自动触发同一路径。
+
+**安全与健壮性**：本插件自身行与 harness 核心行永不被禁用，急救不依赖任何第三方插件（其全部功能——路由、设置、终端、git、MCP、视觉、Tavily——照常工作）；看门狗与侧车写入全程异常安全（任何失败只记日志，绝不把本插件自身的 apply 弄挂，否则启动审计会连带杀死急救本身）；恢复只移除急救自己添加的禁用标记（bundle 禁用行要求恰好 `{id, disabled: true}` 两键才删除，手改过的行不删）。
+
 ## 配置与安全不变量
 
-部署可调项（树/终端/git/mcp/vision 上限、修复开关与占位文案、客户端轮询间隔）全部是 `ext-center` 行 `config:` 块中经 schemastery 校验的字段（`ConfigSchema`）：每个字段自带默认值与合法范围，非法值让插件**加载失败并给出明确报错**（响亮失败，不静默漂移）。
+部署可调项（树/终端/git/mcp/vision 上限、修复开关与占位文案、客户端轮询间隔、急救模式开关与启动窗口）全部是 `ext-center` 行 `config:` 块中经 schemastery 校验的字段（`ConfigSchema`）：每个字段自带默认值与合法范围，非法值让插件**加载失败并给出明确报错**（响亮失败，不静默漂移）。
 
 安全不变量保持固定、不可配置：
 
@@ -66,11 +106,13 @@
 
 ## 客户端结构
 
-`src/client.js` 是构建产物格式的浏览器模块（`__ModuleLoader__.load({ id, factory })` 工厂），由 boot manifest 注入。它在设置页注册「更好的 DeepSeek Harness」区块（含「Tavily」页签：API Key 可见性切换、搜索深度、最大结果数、原始内容与总开关，保存/重置/格式校验全部回到 /ext/api/config），并通过 `conversation.view` slot 提供「终端」「Git」页签、在侧栏底部提供文件树与归档面板、通过 `conversation.input.right` slot 提供「优化输入」按钮（真实 DOM 节点定位在发送按钮与上下文按钮之间）。归档面板从 `sessions` / `workspaces` 标准快照读取已归档会话，支持勾选后批量调用 `/ext/api/archive/delete` 永久删除。所有数据经 `fetch` 调 /ext/api；`/ext/api/state` 的 `limits` 块携带各上限与轮询间隔，界面文案与节奏自动跟随。客户端本身不做任何写入决策——一切变更都回到宿主侧的同一组端点。
+`src/client.js` 是构建产物格式的浏览器模块（`__ModuleLoader__.load({ id, factory })` 工厂），由 boot manifest 注入。它在设置页注册「更好的 DeepSeek Harness」区块（含「Tavily」页签：API Key 可见性切换、搜索深度、最大结果数、原始内容与总开关，保存/重置/格式校验全部回到 /ext/api/config），并通过 `conversation.view` slot 提供「终端」「Git」页签、在侧栏底部提供文件树与归档面板、通过 `conversation.input.right` slot 提供「优化输入」按钮（真实 DOM 节点定位在发送按钮与上下文按钮之间）。文件树 / Git / 终端三个表面经 dsh-web-ui 兼容门延迟注册（见「dsh-web-ui 兼容补丁」），其余表面无条件注册。归档面板从 `sessions` / `workspaces` 标准快照读取已归档会话，支持勾选后批量调用 `/ext/api/archive/delete` 永久删除。急救弹窗经侧栏底部一个不可见挂载点渲染：轮询 `/ext/api/rescue/status`，`phase === "applied"` 时用 primitives 的 `Modal`（body portal 全局限层）列出被禁用的第三方插件（名称 + 原因）供多选恢复。所有数据经 `fetch` 调 /ext/api；`/ext/api/state` 的 `limits` 块携带各上限与轮询间隔，界面文案与节奏自动跟随。客户端本身不做任何写入决策——一切变更都回到宿主侧的同一组端点。
 
 ## 模块职责
 
-- `src/index.js`：宿主侧入口，导出 `{ NAME, SETTINGS_NS, apply, inject, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage }`；`apply(ctx, config)` 是插件主体，按固定顺序注册各效应，并提供 `/ext/api/input/optimize` 输入优化端点与 `/ext/api/archive/delete` 归档删除端点。后四个导出是安装流水线内部件，导出仅为测试可及（行为规格在 `tests/host-wiring.spec.ts`）。
+- `src/index.js`：宿主侧入口，导出 `{ NAME, SETTINGS_NS, apply, inject, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks }`；`apply(ctx, config)` 是插件主体，按固定顺序注册各效应（**急救看门狗最先跑**，同步补丁写入要抢在启动审计前），并提供 `/ext/api/input/optimize` 输入优化端点、`/ext/api/archive/delete` 归档删除端点与 `/ext/api/rescue/*` 急救端点。后五个导出是内部件（安装流水线 / 急救宿主副作用），导出仅为测试可及（行为规格在 `tests/host-wiring.spec.ts`）。
+- `src/rescue.ts`：纯函数模块（状态机 `emptyRescueState`/`withBoot`/`markBootHealthy`/`previousBootFailed`/`sanitizeRescueState`、第三方条目分类、重复 id 检测、`buildRescuePlan` 禁用计划、`buildRestorePlan` 恢复计划、`rescueStatusView`），无任何 I/O，是急救逻辑的主测试战场（`tests/rescue.spec.ts`）。
+- `src/compat.ts`：纯函数模块（`DSH_WEB_UI_FAMILY` 家族注册表、`detectDshWebUi` 存在性检测、`dshWebUiSuppression` 界面让位映射），无任何 I/O，是 dsh-web-ui 兼容决策的主测试战场（`tests/compat.spec.ts`）；浏览器侧内联同表（`tests/compat-client.spec.ts` 防漂移）。
 - `src/client.js`：浏览器侧（见上），另注册「优化输入」按钮并定位到发送按钮与上下文按钮之间。
 - `src/tool-args.ts`：纯函数模块（`tryParseJsonObject` / `repairToolArguments`），无任何 I/O，是工具参数单测的主战场。
 - `src/ansi.ts`：纯函数模块（`stripAnsiChunk`），无任何 I/O，流式剥离终端输出里的 ANSI CSI/OSC 转义序列。

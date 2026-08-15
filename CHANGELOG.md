@@ -8,9 +8,28 @@ For the Chinese version, see [CHANGELOG_ZH.md](CHANGELOG_ZH.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Rescue mode**: when DeepSeek Harness fails to start (plugin conflicts, an unbuilt third-party plugin, duplicate loader entry ids, or a boot that crashed before settling), the next boot automatically enters rescue mode:
+  - every third-party plugin except this one is disabled by default (patch rows get `disabled: true`; third-party profile bundles get id-targeted disable rows) and the harness keeps running with the minimal configuration — no manual patch editing;
+  - once the boot succeeds, a dialog lists every disabled plugin (name + disable reason, including the loader's own failure text when available) with multi-select re-enable, plus "Restore all" / "Keep disabled" quick actions;
+  - the user's choice is written back through the same transactional patch writer and the harness reloads (page refresh in the desktop host, process respawn in a bare `dsh web` host);
+  - this plugin's own functionality is never affected (its own row and every harness-core row are never disabled; all features keep working);
+  - a manual "Enter rescue mode" button on the Plugins tab triggers the same flow.
+  - Config: `rescue.enabled` (default true) and `rescue.settleMs` (startup settle window, default 12000) on the `ext-center` row; sidecar state lives in the profile's `.dsh-rescue.json`. Pure logic in `src/rescue.ts` (state machine, startup-problem detection, disable/restore plans), covered by `tests/rescue.spec.ts` and new `tests/host-wiring.spec.ts` cases.
+- **dsh-web-ui compatibility**: when the dsh-web-ui family (https://github.com/zhu1090093659/dsh-web-ui) is installed and ACTIVE in the same profile, this plugin stands down the surfaces the family owns instead of fighting over the same UI element:
+  - the sidebar file tree and the conversation Git tab stay unregistered while `@linxin666/dsh-client-ui-aionui-panel` (explorer / SCM right panel) or `@linxin666/dsh-client-ui-git-graph` is active;
+  - the conversation Terminal tab stays unregistered while `@linxin666/dsh-ssh` is active;
+  - the host-side image transcription and the vision capability bridge stay inert while `@linxin666/dsh-tool-describe-image` is active (it owns image understanding there);
+  - detection is by loader entry id or package name and only counts ACTIVE, non-disabled fibers — a pending or failed family plugin keeps this plugin's own surface; the host gate re-checks once the loader tree settles. Pure logic in `src/compat.ts` (family registry, detection, suppression mapping), mirrored inline in `src/client.js`, covered by `tests/compat.spec.ts`, `tests/compat-client.spec.ts` and new `tests/host-wiring.spec.ts` cases.
+
 ### Fixed
 
 - **Git-source installs now build missing artifacts**: when a repository does not commit its build output (no `lib/` at all — unbuilt source), installation no longer yields a broken package. After cloning, the declared entry (`main` / `exports`) is checked; if missing, `npm install` + `npm run build` run automatically (10-minute per-step cap; failures surface a clear error with the output tail; a missing npm reports `build-tool-missing`). The success message notes that the package was built from source.
+- **Tavily toggling re-registers cleanly**: turning the Tavily master switch off and back on now re-registers the `tavily_search` tool and its prompt hint (previously the first disable permanently deactivated the sync).
+- **MCP form validation no longer locks the panel**: an invalid timeout / env / header entry now shows the error without leaving every control disabled.
+- **`install.ps1` keeps the appended row on its own line**: when the profile's `cordis.patch.yml` does not end with a newline, the installer inserts one before appending the `ext-center` row instead of gluing it to the last YAML line.
+- **English README synced** with the rescue-mode additions (features, deployment config, usage, HTTP API, troubleshooting).
 
 ## [0.6.0] - 2026-08-15
 

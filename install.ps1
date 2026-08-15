@@ -36,8 +36,11 @@ $content = if (Test-Path $patchFile) { Get-Content $patchFile -Raw } else { "" }
 if ($content -notmatch "(?m)^\s*-\s+id:\s*ext-center\s*$") {
   # Append as UTF-8 without BOM: Add-Content -Encoding UTF8 writes a BOM on
   # Windows PowerShell 5.1, which would corrupt an existing patch file mid-stream.
+  # Keep the appended row on its own line even when the existing file does not
+  # end with a newline — gluing it to the last row would corrupt the YAML.
+  $separator = if ($content.Length -gt 0 -and -not $content.EndsWith("`n")) { "`n" } else { "" }
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::AppendAllText($patchFile, $row, $utf8NoBom)
+  [System.IO.File]::AppendAllText($patchFile, $separator + $row, $utf8NoBom)
 }
 
 Write-Host "better-deepseek-harness installed into profile '$Profile'."

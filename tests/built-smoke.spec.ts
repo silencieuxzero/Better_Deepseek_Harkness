@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 /**
  * Built-artifact smoke: `lib/` is committed so installs stay build-free, and

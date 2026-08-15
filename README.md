@@ -7,6 +7,7 @@
 ## 目录
 
 - [功能](#功能)
+- [兼容性（dsh-web-ui）](#兼容性dsh-web-ui)
 - [安装](#安装)
 - [部署配置](#部署配置ext-center-行的-config-块)
 - [使用](#使用)
@@ -60,7 +61,7 @@
 
 **图片转述**：设置页「图片转述」配置
 
-- 启用后，含图片的模型请求在进入文本模型前，先由用户指定的视觉模型（提供方 / 模型 / 提示词 / 单次上限 1-8，部署上限可配置）通过 `llm/stream` 瀑布包装转述成文字——仅替换本次请求中的图片块，会话记录原图不受影响；转述失败自动降级为占位文本
+- 启用后，含图片的模型请求在进入文本模型前，先由用户指定的视觉模型（提供方 / 模型 / 提示词 / 单次上限 1-8，部署上限可配置）通过 `llm/stream` 瀑布包装转述成文字——仅替换本次请求中的图片块，会话记录原图不受影响；转述失败自动降级为占位文本（已安装且激活 dsh-web-ui 的 `dsh-tool-describe-image` 时本功能自动让位，见「dsh-web-ui 兼容」）
 - 提供方下拉来自已注册的 LLM 路由（`/ext/api/state` 的 `llmProviders`），也可选择「自定义路由」并填写 OpenAI 兼容的 `chat/completions` API URL
 - 自定义路由支持配置 **API Key**（设置页密码输入框，仅写入不回显，留空保存保持原值）；转述请求携带 `Authorization: Bearer <key>` 头，`/ext/api/state` 只返回 `apiKeyConfigured` 布尔、不回传密钥本身
 - 「转述输出上限（tokens）」可在设置页调整（64-8192，留空使用部署默认 `vision.maxTokens`，推理模型可适当调大）
@@ -111,6 +112,8 @@
 
 - 点击后用当前会话所选模型对输入进行优化，结果直接回填到输入框，便于发送前润色 prompt
 
+**dsh-web-ui 兼容**：与 dsh-web-ui 全家桶同装时，冲突界面自动让位（详见 [兼容性（dsh-web-ui）](#兼容性dsh-web-ui)）。
+
 ### 稳健性
 
 **工具参数自动修复**
@@ -120,7 +123,40 @@
   - `arguments` 是损坏 JSON（截断、夹杂文字、尾逗号）时尝试恢复为对象
 - 避免无谓的 `INVALID_ARGS` 报错，让对话更流畅
 
+**急救模式（rescue mode）**
+
+- DeepSeek Harness 启动失败（第三方插件冲突、插件未构建导致加载失败、重复的加载器条目 id 等）时自动进入急救模式：
+  - 检测触发：上次启动未完成（启动窗口内崩溃 / 退出）、启动期第三方条目失败、补丁中存在重复条目 id
+  - 自动禁用除本插件外的所有第三方插件（默认全部禁用，经 `cordis.patch.yml` 热生效，无需手动改文件），以最小化配置继续运行
+  - 启动成功后弹出对话框，列出每个被禁用插件的名称与禁用原因（如有），可多选重新启用；提供「全部恢复」「保持禁用」「启用所选并重新加载」
+  - 确认后按选择写回插件配置并重新加载（桌面宿主刷新页面；命令行宿主重启进程）
+  - 本插件自身功能（设置、终端、git、MCP、视觉、Tavily、文件树等）不受急救模式影响
+  - 插件页提供「进入急救模式」按钮，可手动触发同一流程
+
 </details>
+
+## 兼容性（dsh-web-ui）
+
+[dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui) 是 DeepSeek Harness Web UI 的插件与皮肤全家桶（`@linxin666/*` 系列，可经聚合包 `dsh-web-ui-all` 一键安装）。它的部分功能与本插件界面重叠；**当元素冲突时，本插件不加载自身相应功能，只启用 dsh-web-ui 的功能**——自动让位，无需任何配置。
+
+### 冲突界面与让位规则
+
+| 本插件表面 | dsh-web-ui 的对应功能 | 让位条件（以下插件 ACTIVE 时本插件不加载） |
+| --- | --- | --- |
+| 侧栏文件树（`ext-center.tree`） | 右侧面板「文件」文件树 | `@linxin666/dsh-client-ui-aionui-panel`（`ui-dsh-aionui-panel`） |
+| 对话页「Git」页签（`ext-center.git`） | 右侧面板「变更（SCM）」+ 分支选择器 / Git 图谱 | `dsh-client-ui-aionui-panel` 或 `@linxin666/dsh-client-ui-git-graph`（`ui-git-graph`） |
+| 对话页「终端」页签（`ext-center.terminal`） | 「SSH」远程运维面板的 Web 终端 | `@linxin666/dsh-ssh`（`ssh`） |
+| 图片转述 + 视觉能力桥 | 图像理解（`describe_image` 工具 + 输入框图片按钮） | `@linxin666/dsh-tool-describe-image`（`describe-image`） |
+
+> 说明：dsh-web-ui 的 `describe-image` 会在客户端把带图发送改写为文本引用，图片块根本到不了 `llm/stream` 转述瀑布——因此它生效时本插件的图片转述与视觉能力桥直接保持惰性，避免重复的视觉模型调用。
+
+### 检测与行为
+
+- **按加载器条目 id 或 npm 包名匹配**，且只统计 **ACTIVE（fiber state 2）且未禁用** 的条目：全家桶插件处于 pending / 失败 / 停用状态时它没有渲染任何界面元素，本插件保留自己的功能（fail-open）。
+- **宿主侧**：`apply()` 时快照一次加载器树，树收敛后（最多 8 秒）再复查一次——兄弟 bundle 在本插件启动时可能仍在 pending，晚到的激活也会让位；转述监听器与能力桥内部先查门，被抑制时原样放行（恢复 api-gateway 原生图片准入校验）。
+- **浏览器侧**：文件树 / Git / 终端三个 slot 等客户端加载器树收敛后再注册，只注册不冲突的表面；无加载器或门禁异常时立即 fail-open，绝不隐藏本插件功能。
+- **始终不受影响**：设置页「更好的 DeepSeek Harness」区块、急救模式弹窗、归档面板、「优化输入」按钮，以及本插件的宿主 API 端点（`/ext/api`，与全家桶的 `/git/*`、`/api/dsh-ssh/*` 互不冲突）。
+- 全家桶在运行期才安装时，浏览器侧插件本来就需要刷新页面才出现，**刷新后让位自动生效**。
 
 ## 安装
 
@@ -205,6 +241,9 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
           terminalListPollMs: 2000     # 浏览器终端列表轮询间隔
           gitPollMs: 5000              # 浏览器 git 状态轮询间隔
           mcpPollMs: 3000              # 浏览器 MCP 列表轮询间隔
+        rescue:
+          enabled: true                # 急救模式总开关（默认开）
+          settleMs: 12000              # 启动窗口：启动后多久无异常才算启动成功（3000-120000）
 ```
 
 以上全部字段均可省略（省略即取默认值）；`config:` 块本身也可省略。改完后配置监听器热生效（config 属于 ext-center 行的元数据，同样由监听器重放）。Web UI 通过 `/ext/api/state` 的 `limits` 块读取这些上限，界面文案（「前 2000 项」「上限 8 个」等）与轮询节奏随之自动跟随。
@@ -218,82 +257,9 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 5. 「Tavily」页：填写 API Key 并打开「启用搜索」，会话中模型需要实时信息时会自动搜索并引用来源
 6. 会话页：在输入框右下角（发送按钮与上下文按钮之间）点击星星图标「优化输入」，当前模型会把输入优化后回填到输入框
 7. 侧栏底部：点击「归档」查看已归档对话，勾选后点击「删除」批量永久删除（需二次确认；仍在运行 / 加载中的会话会自动跳过并提示）
+8. 急救模式：Harness 启动失败后自动进入——启动成功后弹出对话框列出被禁用的第三方插件，多选后「启用所选并重新加载」，或「全部恢复」/「保持禁用」；也可在「插件」页手动点击「进入急救模式」
 
 > 安全：所有变更类接口以及会暴露本机路径/输出的读取端点（`/ext/api/state`、文件树、终端输出、Git 读取、MCP 列表）默认只允许本机（回环地址）调用；如需局域网管理，在「设置」页打开 `allowLan`。另外注意：Git 源安装本身等于运行仓库里的代码——安装/加载插件以及自动构建（`npm install` 会执行该仓库声明的 npm 生命周期脚本）都会执行其内容，请只安装你信任的仓库。
-
-## HTTP API（主机侧，前缀 /ext/api）
-
-> 响应统一为 `{ok: true, value}` 或 `{ok: false, error: {code, message}}`。
-
-### 状态与配置
-
-| 端点 | 说明 |
-| --- | --- |
-| `GET /ext/api/state` | 全量状态：技能列表、插件安装记录、加载器条目、配置，以及 `limits`（各上限与客户端轮询间隔，见「部署配置」） |
-| `POST /ext/api/config` | 写 `ext-center` 设置命名空间（`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot` / `vision` / `tavily`） |
-
-### 文件树
-
-| 端点 | 说明 |
-| --- | --- |
-| `GET /ext/api/tree?path=...` | 列出根目录下的一级条目（type / size / mtime / children 计数、`truncated` 截断标记与 `maxEntries` 上限）；根目录解析：`treeRoot` 设置 → 最近注册的工作区 → 进程工作目录 |
-| `GET /ext/api/tree/content?path=...` | 读取树根内一个文本文件（拒绝目录 / 超大 / 含 NUL 的二进制），供编辑器打开 |
-| `POST /ext/api/tree/write` | `{path, content}` 原子写回树根内既有文件（临时文件 + rename；同样有大小与二进制防护） |
-
-### 终端
-
-| 端点 | 说明 |
-| --- | --- |
-| `GET /ext/api/terminal/list` | 全部终端会话（id / kind / cwd / alive / exitCode / createdAt） |
-| `POST /ext/api/terminal/create` | `{kind: 'cmd'\|'powershell'}` 新建终端（上限 = `terminal.maxSessions`，默认 8；cwd = 文件树根），返回 `{id, kind, cwd}` |
-| `POST /ext/api/terminal/write` | `{id, data}` 写入输入（单次 ≤ 4096 字符；已退出终端拒绝） |
-| `POST /ext/api/terminal/resize` | `{id, cols, rows}` 调整终端尺寸（pty 模式生效） |
-| `POST /ext/api/terminal/kill` | `{id}` 关闭终端（幂等） |
-| `GET /ext/api/terminal/output?id=..&after=..` | 轮询增量输出：`after` 为客户端已读字节 offset，返回 `{alive, exitCode, text, cursor}`；`cursor` 是流的权威 offset（环形缓冲区截断后客户端以它重置，而不是自增） |
-
-### Git
-
-| 端点 | 说明 |
-| --- | --- |
-| `GET /ext/api/git/status` | 仓库根、分支、上游、领先/落后、更改列表（含 staged / unstaged / untracked / 重命名 / 冲突标记） |
-| `GET /ext/api/git/diff?path=..&staged=0\|1` | 单文件 diff（结构化为 meta/hunk/ctx/add/del 行，带双侧行号；未跟踪文件按全新增合成；合并冲突按 combined 原样返回） |
-| `GET /ext/api/git/log?n=30` | 最近提交（oid / short / author / time / subject） |
-| `GET /ext/api/git/branches` | 分支列表（含 current 标记） |
-| `POST /ext/api/git/stage` | `{paths:[...]}` 暂存（git add） |
-| `POST /ext/api/git/stage-all` | 全部暂存（git add -A） |
-| `POST /ext/api/git/unstage` | `{paths:[...]}` 取消暂存（git restore --staged） |
-| `POST /ext/api/git/unstage-all` | 全部取消暂存（git reset） |
-| `POST /ext/api/git/commit` | `{message}` 提交（git commit -m） |
-| `POST /ext/api/git/discard` | `{paths:[...]}` 放弃更改（git checkout --；未跟踪文件直接删除，拒绝目录） |
-| `POST /ext/api/git/checkout` | `{branch}` 切换分支（名称白名单校验） |
-| `POST /ext/api/git/pull` | 拉取（--ff-only，超时 = `git.timeoutMs`，默认 60 秒） |
-| `POST /ext/api/git/push` | 推送（超时 = `git.timeoutMs`，默认 60 秒） |
-
-### MCP
-
-| 端点 | 说明 |
-| --- | --- |
-| `GET /ext/api/mcp/list` | 服务器列表（面板管理的行 + 外部手写行，含配置摘要与加载器状态）与 `max`（部署上限） |
-| `POST /ext/api/mcp/add` | `{name, transport, command?, args?, env?, cwd?, url?, headers?, toolCallTimeoutMs?}` 添加服务器（写入 patch 行并热生效） |
-| `POST /ext/api/mcp/remove` | `{name}` 移除服务器（删除 patch 行并热生效） |
-| `POST /ext/api/mcp/set-enabled` | `{name, enabled}` 启用 / 停用（patch 行 disabled 标记） |
-
-### 技能与插件
-
-| 端点 | 说明 |
-| --- | --- |
-| `POST /ext/api/skill/install` | `{name, text?\|url?\|path?}` 安装技能 |
-| `POST /ext/api/skill/uninstall` | `{name}` 卸载技能 |
-| `POST /ext/api/plugin/install` | `{source: {kind: 'npm'\|'url'\|'folder'\|'git', spec?\|url?\|path?}}` 安装插件 |
-| `POST /ext/api/plugin/uninstall` | `{name}` 卸载插件（移除补丁行 + 包目录） |
-| `POST /ext/api/plugin/set-enabled` | `{name, enabled}` 启用 / 停用插件 |
-
-### 对话与归档
-
-| 端点 | 说明 |
-| --- | --- |
-| `POST /ext/api/input/optimize` | `{text, provider, model, sessionId?, reasoningEffort?}` 用指定（当前会话所选）模型优化输入，返回 `{text}` |
-| `POST /ext/api/archive/delete` | `{ids:[...]}` 批量永久删除已归档会话（必须位于归档集合；仍在运行 / 加载中的会话跳过），返回 `{deleted, skipped, count}` |
 
 ## 故障排查
 
@@ -304,4 +270,5 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 - **安装报 build-failed / build-tool-missing**：Git 源仓库没有提交构建产物，且自动构建失败（或本机没有 npm）。先确认本机 `npm` 可用且能访问 registry；若仓库没有 `build` 脚本或构建后仍缺入口文件，请改用该包的 npm 包名 / tarball URL 安装。
 - **安装报 `EPERM: Permission denied`（Windows，路径指向 `.dsh-ext-center-staging`）**：Windows 上删除目录时若被其他进程短暂占用（杀毒实时扫描刚 clone 的仓库、文件监听等），会返回 EPERM。本插件已在 staging 清理与目标目录替换处内置重试（`maxRetries: 5`），瞬时锁会自动跳过；若反复复现说明锁是持续性的——将 `~/.dsh` 加入 Windows 安全中心的排除目录，或重启一次后再装（残留的 staging 目录可手动删除，不影响数据）。
 - **启动报 `[better-deepseek-harness] invalid config on the ext-center row ...`**：`cordis.patch.yml` 里 `ext-center` 行的 `config:` 有非法值（超出范围或类型错误）。按「部署配置」一节修正或直接删掉该 `config:` 块（全部回落默认值）后重启。
+- **Harness 启动失败（插件冲突 / 第三方插件未构建）**：正常重启一次应用——急救模式会在下一次启动时自动禁用出问题的第三方插件并以最小化配置启动，随后弹出对话框供你选择恢复哪些插件。若对话框选择「保持禁用」后想恢复，到「插件」页手动启用，或手动编辑 `cordis.patch.yml` 删除对应行的 `disabled: true`（急救记录在 profile 目录的 `.dsh-rescue.json`）。
 - **偶发 `invalid arguments: missing required property ...`**：模型生成的工具参数偶发缺字段或 JSON 损坏。本插件的 `tools/execute` 包装层会自动修复 `description` 缺失与可恢复的 JSON；确实缺少 `code` / `command` 等内容的调用仍会按 DSH 原机制报错并让模型重试，属正常反馈。

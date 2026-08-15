@@ -9,6 +9,7 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
 ## Table of Contents
 
 - [Features](#features)
+- [Compatibility (dsh-web-ui)](#compatibility-dsh-web-ui)
 - [Installation](#installation)
 - [Deployment Configuration (the `config` block of the `ext-center` row)](#deployment-configuration-the-config-block-of-the-ext-center-row)
 - [Usage](#usage)
@@ -61,7 +62,7 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
 
 **Image transcription**: the "Image Transcription" configuration on the settings page
 
-- When enabled, model requests that contain images are first described by the vision model you choose (provider / model / prompt / per-request cap 1–8, bounded by the deployment cap) through the `llm/stream` waterfall, before text-only adapters see them — only the image blocks of the current request are replaced; the recorded conversation keeps the original images. A failed transcription degrades automatically to placeholder text
+- When enabled, model requests that contain images are first described by the vision model you choose (provider / model / prompt / per-request cap 1–8, bounded by the deployment cap) through the `llm/stream` waterfall, before text-only adapters see them — only the image blocks of the current request are replaced; the recorded conversation keeps the original images. A failed transcription degrades automatically to placeholder text (with dsh-web-ui's `dsh-tool-describe-image` installed and ACTIVE, this feature stands down — see "dsh-web-ui compatibility")
 - The provider dropdown is populated from the registered LLM routes (the `llmProviders` of `/ext/api/state`); you can also pick "custom route" and fill in an OpenAI-compatible `chat/completions` API URL
 - The custom route supports an **API Key** (password input on the settings page, write-only, never echoed; saving with an empty field keeps the previous value); transcription requests carry an `Authorization: Bearer <key>` header, and `/ext/api/state` only reports the `apiKeyConfigured` boolean — never the key itself
 - The **transcription output cap (tokens)** is adjustable on the settings page (64–8192; empty = the deployment default `vision.maxTokens`; raise it for reasoning models)
@@ -112,6 +113,8 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
 
 - Click it to optimize the input with the currently selected model of the session; the result is written back into the input box, ready to polish the prompt before sending
 
+**dsh-web-ui compatibility**: when installed alongside the dsh-web-ui family, conflicting surfaces stand down automatically (see [Compatibility (dsh-web-ui)](#compatibility-dsh-web-ui)).
+
 ### Robustness
 
 **Tool-call argument auto-repair**
@@ -121,7 +124,40 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
   - `arguments` that are broken JSON (truncated, interleaved text, trailing commas) are recovered into an object
 - Avoids needless `INVALID_ARGS` errors and keeps conversations flowing
 
+**Rescue mode**
+
+- When DeepSeek Harness fails to start (third-party plugin conflicts, a plugin that was not built, duplicate loader entry ids, ...) rescue mode kicks in automatically:
+  - Detection: the previous boot never completed (crashed / exited inside the startup window), a third-party entry failed during startup, or the patch carries duplicate entry ids
+  - Every third-party plugin except this one is disabled by default (applied live through `cordis.patch.yml` — no hand editing) and the harness keeps running with the minimal configuration
+  - After a successful boot a dialog lists every disabled plugin with its name and reason (when available); pick any subset to re-enable, or choose "Restore all" / "Keep disabled" / "Enable selected & reload"
+  - Confirming writes the selection back and reloads (page refresh in the desktop host; process restart in a bare command-line host)
+  - This plugin's own features (settings, terminals, git, MCP, vision, Tavily, file tree, ...) are unaffected by rescue mode
+  - The Plugins tab also offers an "Enter rescue mode" button to trigger the same flow manually
+
 </details>
+
+## Compatibility (dsh-web-ui)
+
+[dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui) is a plugin & skin family for the DeepSeek Harness Web UI (the `@linxin666/*` packages; the `dsh-web-ui-all` aggregate installs the whole family in one shot). Some of its features overlap with this plugin's surfaces: **when elements conflict, this plugin does not load its own corresponding feature — dsh-web-ui's feature takes over**. The stand-down is automatic; no configuration is needed.
+
+### Conflicting surfaces and stand-down rules
+
+| This plugin's surface | dsh-web-ui's counterpart | Stand down while ACTIVE (this plugin's feature is not loaded) |
+| --- | --- | --- |
+| Sidebar file tree (`ext-center.tree`) | "Files" explorer in the right panel | `@linxin666/dsh-client-ui-aionui-panel` (`ui-dsh-aionui-panel`) |
+| Conversation "Git" tab (`ext-center.git`) | "Changes (SCM)" right panel + branch selector / git graph | `dsh-client-ui-aionui-panel` or `@linxin666/dsh-client-ui-git-graph` (`ui-git-graph`) |
+| Conversation "Terminal" tab (`ext-center.terminal`) | Web terminal in the "SSH" remote-ops panel | `@linxin666/dsh-ssh` (`ssh`) |
+| Image transcription + vision capability bridge | Image understanding (`describe_image` tool + image button in the input box) | `@linxin666/dsh-tool-describe-image` (`describe-image`) |
+
+> Note: dsh-web-ui's `describe-image` rewrites image-bearing sends into text references on the client side, so image blocks never reach the `llm/stream` transcription waterfall — while it is active, this plugin's image transcription and vision capability bridge stay inert, avoiding duplicated vision-model calls.
+
+### Detection and behavior
+
+- **Matches loader entry ids or npm package names** and only counts **ACTIVE (fiber state 2), non-disabled** entries: while a family plugin is pending / failed / disabled it renders no elements, so this plugin keeps its own surface (fail-open).
+- **Host side**: the loader tree is snapshotted at `apply()` time and re-checked once the tree converges (up to 8 s) — a sibling bundle may still be pending when this plugin starts, and a late activation also stands down. The transcription listener and capability bridge consult the gate per call and pass requests through untouched when suppressed (the api-gateway's native image-admission check is restored).
+- **Browser side**: the file-tree / Git / terminal slot registrations wait for the client loader tree to converge and then register only the non-conflicting surfaces; a missing loader or a broken gate fails open immediately — our surfaces are never hidden.
+- **Never affected**: the "Better DeepSeek Harness" settings section, the rescue-mode dialog, the archive panel, the "Optimize input" button, and this plugin's host API endpoints (`/ext/api` — they do not collide with the family's `/git/*` or `/api/dsh-ssh/*`).
+- If the family is installed at runtime, its browser half only appears after a page refresh anyway — **the stand-down takes effect after that refresh**.
 
 ## Installation
 
@@ -206,6 +242,9 @@ All deployment-tunable behavior is collected in the `config:` block of the `ext-
           terminalListPollMs: 2000     # browser terminal list poll interval
           gitPollMs: 5000              # browser git status poll interval
           mcpPollMs: 3000              # browser MCP list poll interval
+        rescue:
+          enabled: true                # rescue mode master switch (on by default)
+          settleMs: 12000              # startup window: how long without problems before a boot is healthy (3000-120000)
 ```
 
 All of the above fields may be omitted (omitting means the default is used); the `config:` block itself may also be omitted. After editing, the config listener hot-applies the change (config is metadata of the `ext-center` row and is likewise replayed by the listener). The Web UI reads these caps from the `limits` block of `/ext/api/state`, and the UI copy ("first 2000 entries", "cap 8", etc.) and poll rhythms follow automatically.
@@ -219,8 +258,9 @@ All of the above fields may be omitted (omitting means the default is used); the
 5. "Tavily" tab: enter your API Key and turn on "Enable search"; in conversations the model will automatically search for real-time information and cite sources
 6. Conversation page: click the star icon "Optimize Input" at the bottom right of the input box (between the send button and the context button); the current model optimizes the input and writes it back into the input box
 7. Bottom of the sidebar: click "Archive" to view archived conversations, check them and click "Delete" to batch **permanently** delete (confirmation required; sessions still running / loading are automatically skipped and reported)
+8. Rescue mode: enters automatically after a failed Harness boot — once the minimal boot succeeds, a dialog lists the disabled third-party plugins; select some and click "Enable selected & reload", or use "Restore all" / "Keep disabled". You can also trigger it manually with "Enter rescue mode" on the Plugins tab
 
-> Security: all mutation endpoints and read endpoints that expose local paths/output (`/ext/api/state`, the file tree, terminal output, Git reads, the MCP list) are loopback-only by default; to manage over LAN, turn on `allowLan` on the Settings page.
+> Security: all mutation endpoints and read endpoints that expose local paths/output (`/ext/api/state`, the file tree, terminal output, Git reads, the MCP list) are loopback-only by default; to manage over LAN, turn on `allowLan` on the Settings page. Also note: installing from a Git source means running that repository's code — installation/loading and the automatic build (`npm install` executes npm lifecycle scripts declared by that repository) all run its contents, so only install repositories you trust.
 
 ## HTTP API (host-side, prefix /ext/api)
 
@@ -296,12 +336,22 @@ All of the above fields may be omitted (omitting means the default is used); the
 | `POST /ext/api/input/optimize` | `{text, provider, model, sessionId?, reasoningEffort?}` optimizes input with the specified (currently selected) model, returns `{text}` |
 | `POST /ext/api/archive/delete` | `{ids:[...]}` batch-permanently deletes archived sessions (must belong to the archive set; sessions still running / loading are skipped), returns `{deleted, skipped, count}` |
 
+### Rescue Mode
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /ext/api/rescue/status` | Current rescue status: `phase` (`idle` / `applied`), `active`, the triggering failure and the disabled third-party plugins with reasons (no row shapes, no secrets) |
+| `POST /ext/api/rescue/trigger` | Manually applies rescue mode (disables every third-party plugin except this one) and returns the resulting status |
+| `POST /ext/api/rescue/apply` | `{enable:[...]}` applies the user's decision: re-enables the selected plugins, keeps the rest disabled, marks the boot healthy, then reloads (`none` for an empty selection, `page` in the desktop host, `process` in a bare host) |
+
 ## Troubleshooting
 
 - **Changes not hot-applied**: changes to `cordis.patch.yml` are applied by the harness's config listener (HMR). If you make several changes in quick succession (e.g. install then immediately disable) and trigger a listener race, the config listener may stall — restart `dsh web` once to recover (the patch file itself is correct and loads normally after restart). This plugin's writes are serialized with an interval to avoid that situation as much as possible.
 - **Settings-page section not visible**: refresh the browser page (the client bundle is injected by the boot manifest and loads on refresh).
 - **Settings page stuck on "Loading…" / no image-transcription options**: the settings page now reads and writes through this plugin's own `/ext/api/state` and `/ext/api/config` and no longer depends on whether api-proxy exposes `ext-center`. If an old version is still loading, upgrade, restart `dsh web` and refresh the page; if only the old version is available, check the host log to confirm the `ext-center` settings namespace is registered.
 - **Install fails with git-unavailable**: git is not installed locally; switch to the directory / tarball URL / npm package name sources.
+- **Install fails with build-failed / build-tool-missing**: the Git source repository does not commit its built output and the automatic build failed (or npm is missing locally). First confirm `npm` works and can reach the registry; if the repository declares no `build` script or the entry file is still missing after the build, install that package through its npm package name / tarball URL instead.
 - **Install fails with `EPERM: Permission denied` (Windows, path pointing at `.dsh-ext-center-staging`)**: on Windows, deleting a directory that another process briefly holds open (AV real-time scan of a freshly cloned repo, file watchers, ...) returns EPERM. This plugin now retries staging cleanup and target replacement internally (`maxRetries: 5`), so transient locks are skipped automatically; if it keeps recurring the lock is persistent — add `~/.dsh` to Windows Security exclusions, or restart once and retry (a leftover staging directory can be deleted by hand; it holds no data).
 - **Startup error `[better-deepseek-harness] invalid config on the ext-center row ...`**: the `config:` block of the `ext-center` row in `cordis.patch.yml` has an illegal value (out of range or wrong type). Fix it per the "Deployment Configuration" section, or simply delete the `config:` block (everything falls back to defaults) and restart.
+- **Harness fails to start (plugin conflict / third-party plugin not built)**: restart the application once — on the next boot rescue mode automatically disables the offending third-party plugins and starts with the minimal configuration, then shows a dialog to pick which plugins to restore. If you chose "Keep disabled" and later want them back, re-enable them on the Plugins tab or edit `cordis.patch.yml` by hand to delete the `disabled: true` markers (the rescue record lives in the profile's `.dsh-rescue.json`).
 - **Occasional `invalid arguments: missing required property ...`**: the model occasionally generates tool arguments with missing fields or broken JSON. This plugin's `tools/execute` wrapper automatically repairs a missing `description` and recoverable JSON; calls genuinely missing `code` / `command` content still error out through DSH's native mechanism and make the model retry — that is normal feedback.

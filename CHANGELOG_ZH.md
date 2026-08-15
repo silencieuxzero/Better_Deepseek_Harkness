@@ -6,9 +6,28 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **急救模式（rescue mode）**：DeepSeek Harness 启动失败（插件冲突、第三方插件未构建导致加载失败、重复的加载器条目 id，或上次启动在启动窗口内崩溃退出）时自动进入急救模式：
+  - 除本插件外的所有第三方插件默认全部禁用（patch 行原地加 `disabled: true`；第三方 profile bundle 按其自身补丁行 id 追加禁用行），经 `cordis.patch.yml` 热生效，以最小化配置继续运行——无需手动改文件；
+  - 启动成功后弹出对话框，列出每个被禁用插件的名称与禁用原因（fiber 失败时尽力附上加载器自己的报错），可多选重新启用，并提供「全部恢复」「保持禁用」「启用所选并重新加载」快捷选项；
+  - 用户确认后经同一事务性补丁写入器按选择写回配置并重新加载（桌面宿主刷新页面；命令行宿主重启进程）；
+  - 本插件自身功能完全不受影响（自身行与 harness 核心行永不被禁用，设置/终端/git/MCP/视觉/Tavily/文件树照常工作）；
+  - 「插件」页新增「进入急救模式」按钮，可手动触发同一流程。
+  - 配置：`ext-center` 行 `rescue.enabled`（默认 true）与 `rescue.settleMs`（启动窗口，默认 12000）；侧车状态在 profile 目录的 `.dsh-rescue.json`。纯逻辑在 `src/rescue.ts`（状态机、启动问题检测、禁用/恢复计划），由 `tests/rescue.spec.ts` 与新增的 `tests/host-wiring.spec.ts` 用例覆盖。
+- **dsh-web-ui 兼容补丁**：同一 profile 里 dsh-web-ui 全家桶（https://github.com/zhu1090093659/dsh-web-ui）已安装且 ACTIVE 时，本插件对全家桶拥有的界面元素主动让位，不再加载自身对应功能：
+  - `@linxin666/dsh-client-ui-aionui-panel`（右侧文件树 / SCM 面板）或 `@linxin666/dsh-client-ui-git-graph` 生效时，侧栏文件树与对话页「Git」页签不注册；
+  - `@linxin666/dsh-ssh` 生效时，对话页「终端」页签不注册；
+  - `@linxin666/dsh-tool-describe-image` 生效时，宿主侧图片转述与视觉能力桥保持惰性（该场景下图像理解由 describe-image 负责）；
+  - 检测按加载器条目 id 或包名匹配，且只统计 ACTIVE 且未禁用的 fiber——全家桶插件处于 pending / 失败时本插件保留自己的界面；宿主侧在加载器树收敛后会复查一次。纯逻辑在 `src/compat.ts`（家族注册表、检测、抑制映射），`src/client.js` 内联同表，由 `tests/compat.spec.ts`、`tests/compat-client.spec.ts` 与新增的 `tests/host-wiring.spec.ts` 用例覆盖。
+
 ### 修复
 
 - **Git 源安装自动补构建**：仓库未提交构建产物（`lib/` 完全不存在，即源码未构建）时，安装不再得到残缺包——克隆后检查包声明入口（`main` / `exports`），缺失则自动 `npm install` + `npm run build` 补构建（单步超时 10 分钟，失败给出明确报错并附输出尾部；本机无 npm 时报 `build-tool-missing`）。安装成功消息会标注「已自动执行 npm install 并构建」。
+- **Tavily 开关可反复启停**：把 Tavily 总开关关闭后再打开，现在会重新注册 `tavily_search` 工具与提示引导（此前首次关闭后同步状态被永久停用，无法再启用）。
+- **MCP 表单校验不再卡死界面**：超时 / 环境变量 / 请求头校验失败时只显示错误，不再让全部控件保持禁用。
+- **`install.ps1` 追加行保持独立**：当 profile 的 `cordis.patch.yml` 不以换行结尾时，安装脚本会先补一个换行再追加 `ext-center` 行，避免与最后一行 YAML 粘连。
+- **同步英文 README**：补齐急救模式相关功能说明、部署配置、使用步骤、HTTP API 与故障排查。
 
 ## [0.6.0] - 2026-08-15
 

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { apply, inject, NAME, SETTINGS_NS, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage } from "../src/index.js";
+import { apply, inject, NAME, SETTINGS_NS, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks } from "../src/index.js";
 
 /**
  * A minimal cordis ctx double for apply(). `baseUrl` must be a real file URL
@@ -38,6 +38,15 @@ interface MockOptions {
   noSettings?: boolean;
   /** when true, ctx.get("skills") throws like a missing cordis service. */
   noSkills?: boolean;
+  /** baseUrl override — tests point it at a temp profile directory. */
+  baseUrl?: string;
+  /** loader entry snapshots returned by ctx.get("loader").entries(). */
+  loaderEntries?: Array<{
+    id: string;
+    options?: { name?: string; group?: boolean };
+    disabled?: boolean;
+    fiber?: { state?: number };
+  }>;
 }
 
 function mockCtx(options: MockOptions = {}) {
@@ -59,9 +68,13 @@ function mockCtx(options: MockOptions = {}) {
     writable: true
   };
   const skills = { registerProvider: vi.fn(() => () => {}) };
+  const loader = {
+    entries: vi.fn(() => options.loaderEntries ?? []),
+    resolve: vi.fn(() => undefined)
+  };
   const pendingInject: Array<(child: unknown) => void> = [];
   const ctx = {
-    baseUrl: pathToFileURL(join(process.cwd(), "lib", "index.js")).href,
+    baseUrl: options.baseUrl ?? pathToFileURL(join(process.cwd(), "lib", "index.js")).href,
     get: vi.fn((name: string) => {
       // cordis throws when the requested service is not mounted; the plugin
       // must treat every optional service lookup as best-effort.
@@ -69,6 +82,7 @@ function mockCtx(options: MockOptions = {}) {
       if (name === "skills" && options.noSkills) throw new Error("service skills is not mounted");
       if (name === "settings") return settings;
       if (name === "skills") return skills;
+      if (name === "loader") return loader;
       if (name === "llm") return options.llm;
       if (name === "attachments") return options.attachments;
       if (name === "workspaceRegistry") return options.workspaceRegistry;
@@ -76,7 +90,7 @@ function mockCtx(options: MockOptions = {}) {
       if (name === "sessions") return options.sessions;
       return undefined;
     }),
-    inject: vi.fn((names: string[], callback: (child: unknown) => void) => {
+    inject: vi.fn((_names: string[], callback: (child: unknown) => void) => {
       if (options.deferInject) {
         pendingInject.push(callback);
         return {};
@@ -110,6 +124,66 @@ function mockCtx(options: MockOptions = {}) {
   return { ctx, settings, skills, disposers, registrations, pendingInject };
 }
 
+/** A temp profile directory fixture for rescue-mode wiring tests. */
+function rescueProfile(options: { patch: string; state?: string; manifest?: string }) {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-rescue-"));
+  writeFileSync(join(dir, "cordis.patch.yml"), options.patch);
+  if (options.state !== undefined) writeFileSync(join(dir, ".dsh-rescue.json"), options.state);
+  writeFileSync(join(dir, "package.json"), options.manifest ?? JSON.stringify({
+    name: "dsh-profile-test",
+    private: true,
+    dsh: { profile: { bundles: [] } }
+  }));
+  return dir;
+}
+
+/** The rescue state file of a temp profile dir, parsed. */
+function rescueStateOf(dir: string) {
+  return JSON.parse(readFileSync(join(dir, ".dsh-rescue.json"), "utf8"));
+}
+
+/** The rescue patch file of a temp profile dir, raw. */
+function rescuePatchOf(dir: string) {
+  return readFileSync(join(dir, "cordis.patch.yml"), "utf8");
+}
+
+/** Whether the patch block of one loader row carries `disabled: true`. */
+function rowDisabled(raw: string, id: string) {
+  for (const block of raw.split("\n- ")) {
+    if (block.split("\n").some((line) => line === `id: ${id}`)) return block.includes("disabled: true");
+  }
+  return false;
+}
+
+/** Run every apply()-registered disposer (clears the rescue settle timers). */
+function disposeAll(disposers: Array<() => void>) {
+  for (const dispose of disposers) dispose();
+}
+
+/** A previous-boot-crashed state file (phase idle, boot never settled). */
+function crashedState(pid = 1234) {
+  return JSON.stringify({
+    version: 1,
+    phase: "idle",
+    failure: null,
+    plugins: [],
+    appliedAt: null,
+    boot: { pid, startedAt: 1, healthy: false, healthyAt: null }
+  });
+}
+
+/** A previous-boot-healthy state file. */
+function healthyState(pid = 1234) {
+  return JSON.stringify({
+    version: 1,
+    phase: "idle",
+    failure: null,
+    plugins: [],
+    appliedAt: null,
+    boot: { pid, startedAt: 1, healthy: true, healthyAt: 2 }
+  });
+}
+
 function fakeRes() {
   return { writeHead: vi.fn(), end: vi.fn() };
 }
@@ -135,6 +209,7 @@ describe("apply() wiring", () => {
     expect(NAME).toBe("better-deepseek-harness");
     expect(typeof SETTINGS_NS).toBe("string");
     expect(inject).toEqual(["webServer", "tools"]);
+    expect(typeof __setRescueHostHooks).toBe("function");
   });
 
   it("registers the API route, settings namespace, skill provider, and waterfalls", () => {
@@ -446,6 +521,136 @@ describe("vision capability bridge", () => {
     expect(llm.resolveModelInfo).not.toBe(original);
     for (const dispose of disposers) dispose();
     expect(llm.resolveModelInfo).toBe(original);
+  });
+});
+
+describe("dsh-web-ui compatibility gate (host)", () => {
+  /** The loader entry view of an ACTIVE dsh-web-ui family plugin. */
+  function familyEntry(id: string, name: string, fiberState = 2) {
+    return { id, options: { name }, fiber: { state: fiberState } };
+  }
+
+  /** Capture the registered llm/stream listener from a fresh apply(). */
+  function captureListener(options: MockOptions = {}) {
+    const { ctx } = mockCtx(options);
+    apply(ctx, {});
+    const call = (ctx.on as ReturnType<typeof vi.fn>).mock.calls.find((args: unknown[]) => args[0] === "llm/stream");
+    if (!call) throw new Error("llm/stream listener was not registered");
+    return call[1] as (options: unknown, next: () => unknown) => unknown;
+  }
+
+  function streamOf(chunks: unknown[]): AsyncIterable<unknown> {
+    return (async function* () {
+      for (const chunk of chunks) yield chunk;
+    })();
+  }
+
+  const IMAGE_REQUEST = {
+    provider: "main",
+    model: "m",
+    messages: [{ role: "user", content: [{ type: "image", attachment: { kind: "data" } }] }]
+  };
+
+  it("passes image requests through untouched while describe-image is ACTIVE", async () => {
+    const stream = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+    const listener = captureListener({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: { stream },
+      loaderEntries: [familyEntry("describe-image", "@linxin666/dsh-tool-describe-image")]
+    });
+    const next = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+    const result = listener(IMAGE_REQUEST, next) as AsyncIterable<unknown>;
+    const chunks: unknown[] = [];
+    for await (const chunk of result) chunks.push(chunk);
+    // describe-image owns image understanding: no transcription call at all.
+    expect(stream).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(chunks.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the capability bridge inert while describe-image is ACTIVE", async () => {
+    const llm = {
+      stream: vi.fn(),
+      resolveModelInfo: vi.fn(async () => ({ inputModalities: ["text"] }))
+    };
+    const { ctx } = mockCtx({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm,
+      loaderEntries: [familyEntry("describe-image", "@linxin666/dsh-tool-describe-image")]
+    });
+    apply(ctx, {});
+    const info = await (llm.resolveModelInfo as ReturnType<typeof vi.fn>)("deepseek", "deepseek-v4-flash");
+    // the api-gateway's original modality check stays in charge
+    expect(info).toEqual({ inputModalities: ["text"] });
+  });
+
+  it("keeps transcribing while describe-image is still pending (fail-open)", async () => {
+    const stream = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+    const listener = captureListener({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: { stream },
+      loaderEntries: [familyEntry("describe-image", "@linxin666/dsh-tool-describe-image", 0)]
+    });
+    const next = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+    const result = listener(IMAGE_REQUEST, next) as AsyncIterable<unknown>;
+    for await (const _chunk of result) { /* drain */ }
+    expect(stream).toHaveBeenCalledTimes(2); // vision call + rewritten main call
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("other family members do not suppress image understanding", async () => {
+    const stream = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+    const listener = captureListener({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: { stream },
+      loaderEntries: [
+        familyEntry("ui-dsh-aionui-panel", "@linxin666/dsh-client-ui-aionui-panel"),
+        familyEntry("ui-git-graph", "@linxin666/dsh-client-ui-git-graph"),
+        familyEntry("ssh", "@linxin666/dsh-ssh")
+      ]
+    });
+    const next = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+    const result = listener(IMAGE_REQUEST, next) as AsyncIterable<unknown>;
+    for await (const _chunk of result) { /* drain */ }
+    expect(stream).toHaveBeenCalledTimes(2);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("turns suppression on once the loader tree settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const entries: NonNullable<MockOptions["loaderEntries"]> = [
+        familyEntry("describe-image", "@linxin666/dsh-tool-describe-image", 0) // pending at apply()
+      ];
+      const stream = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+      const { ctx } = mockCtx({
+        stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+        llm: { stream },
+        loaderEntries: entries
+      });
+      apply(ctx, {});
+      const call = (ctx.on as ReturnType<typeof vi.fn>).mock.calls.find((args: unknown[]) => args[0] === "llm/stream");
+      if (!call) throw new Error("llm/stream listener was not registered");
+      const listener = call[1] as (options: unknown, next: () => unknown) => unknown;
+
+      // while describe-image is pending we keep transcribing
+      const nextBefore = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+      const resultBefore = listener(IMAGE_REQUEST, nextBefore) as AsyncIterable<unknown>;
+      for await (const _chunk of resultBefore) { /* drain */ }
+      expect(stream).toHaveBeenCalledTimes(2);
+
+      // the family settles ACTIVE; the gate refresh kicks in on the next poll
+      entries[0]!.fiber = { state: 2 };
+      await vi.advanceTimersByTimeAsync(500);
+
+      const nextAfter = vi.fn(() => streamOf([{ type: "finish", reason: { kind: "ok" } }]));
+      const resultAfter = listener(IMAGE_REQUEST, nextAfter) as AsyncIterable<unknown>;
+      for await (const _chunk of resultAfter) { /* drain */ }
+      expect(stream).toHaveBeenCalledTimes(2); // no new transcription calls
+      expect(nextAfter).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -863,6 +1068,26 @@ describe("tavily search tool", () => {
     expect(tool).toBeUndefined();
   });
 
+  it("re-registers the tool after the master switch is toggled off and back on", () => {
+    const { ctx, settings } = mockCtx({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
+    const register = ctx.tools.register as ReturnType<typeof vi.fn>;
+    const firstDispose = vi.fn();
+    register.mockReturnValueOnce(firstDispose);
+    apply(ctx, {});
+    expect(register).toHaveBeenCalledTimes(1);
+
+    // apply() feeds the settings owner's watch callback into the Tavily sync.
+    const owner = settings.register.mock.results[0].value as { watch: ReturnType<typeof vi.fn> };
+    const onSettings = owner.watch.mock.calls[0][0] as (next: Record<string, unknown>) => void;
+
+    onSettings({ tavily: { enabled: false, apiKey: "tvly-" + "a".repeat(32) } });
+    expect(firstDispose).toHaveBeenCalledTimes(1);
+
+    onSettings({ tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } });
+    expect(register).toHaveBeenCalledTimes(2);
+    expect(firstDispose).toHaveBeenCalledTimes(1);
+  });
+
   it("disposes the registered tool when the plugin unloads", () => {
     const dispose = vi.fn();
     const { ctx, disposers } = mockCtx({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
@@ -1256,6 +1481,341 @@ describe("materializePackage source metadata", () => {
       expect(existsSync(join(staging, "package.json"))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/* ─────────────────────────── rescue mode ─────────────────────────── */
+
+describe("rescue mode watchdog", () => {
+  const PATCH = [
+    "- id: ext-center",
+    "  name: better-deepseek-harness",
+    "- id: broken",
+    "  name: broken-plugin",
+    "- id: fine",
+    "  name: fine-plugin",
+    ""
+  ].join("\n");
+
+  function mountedOf(dir: string, options: { loaderEntries?: MockOptions["loaderEntries"]; config?: Record<string, unknown> } = {}) {
+    const { ctx, disposers } = mockCtx({
+      baseUrl: pathToFileURL(join(dir, "package.json")).href,
+      loaderEntries: options.loaderEntries
+    });
+    apply(ctx, options.config ?? {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    return {
+      disposers,
+      handler: register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>
+    };
+  }
+
+  it("applies rescue (disables every third-party plugin) when the previous boot never settled", () => {
+    __setRescueHostHooks({ pid: 9999 });
+    const dir = rescueProfile({ patch: PATCH, state: crashedState() });
+    try {
+      const { disposers } = mountedOf(dir);
+      try {
+        const raw = rescuePatchOf(dir);
+        expect(rowDisabled(raw, "broken")).toBe(true);
+        expect(rowDisabled(raw, "fine")).toBe(true);
+        expect(rowDisabled(raw, "ext-center")).toBe(false);
+        const state = rescueStateOf(dir);
+        expect(state.phase).toBe("applied");
+        expect(state.failure.kind).toBe("crash");
+        expect(state.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual(["broken-plugin", "fine-plugin"]);
+        expect(state.boot.pid).toBe(9999);
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null });
+    }
+  });
+
+  it("leaves a healthy boot alone, records it, and settles after the window", async () => {
+    __setRescueHostHooks({ pid: 9999 });
+    const dir = rescueProfile({ patch: PATCH, state: healthyState() });
+    vi.useFakeTimers();
+    try {
+      const { disposers } = mountedOf(dir, { config: { rescue: { enabled: true, settleMs: 3000 } } });
+      try {
+        expect(rescuePatchOf(dir).includes("disabled: true")).toBe(false);
+        let state = rescueStateOf(dir);
+        expect(state.boot.pid).toBe(9999);
+        expect(state.boot.healthy).toBe(false);
+        await vi.advanceTimersByTimeAsync(3000);
+        state = rescueStateOf(dir);
+        expect(state.boot.healthy).toBe(true);
+        expect(state.phase).toBe("idle");
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      vi.useRealTimers();
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null });
+    }
+  });
+
+  it("applies rescue when a third-party entry's fiber is already failed at apply time", () => {
+    __setRescueHostHooks({ pid: 9999 });
+    const dir = rescueProfile({ patch: PATCH, state: healthyState() });
+    try {
+      const { disposers } = mountedOf(dir, {
+        loaderEntries: [
+          { id: "broken", options: { name: "broken-plugin" }, fiber: { state: 3 } },
+          { id: "fine", options: { name: "fine-plugin" }, fiber: { state: 2 } }
+        ]
+      });
+      try {
+        const state = rescueStateOf(dir);
+        expect(state.phase).toBe("applied");
+        expect(state.failure.kind).toBe("fiber-failed");
+        expect(state.failure.message).toContain("broken-plugin");
+        // rescue disables every third-party plugin by default — the failed
+        // entry triggers it, the healthy one is caught by the sweep
+        const raw = rescuePatchOf(dir);
+        expect(rowDisabled(raw, "broken")).toBe(true);
+        expect(rowDisabled(raw, "fine")).toBe(true);
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null });
+    }
+  });
+
+  it("applies rescue on duplicate loader entry ids", () => {
+    __setRescueHostHooks({ pid: 9999 });
+    const dir = rescueProfile({
+      patch: "- id: ext-center\n  name: better-deepseek-harness\n- id: dup\n  name: p1\n- id: dup\n  name: p2\n",
+      state: healthyState()
+    });
+    try {
+      const { disposers } = mountedOf(dir);
+      try {
+        const state = rescueStateOf(dir);
+        expect(state.phase).toBe("applied");
+        expect(state.failure.kind).toBe("duplicate-ids");
+        expect(state.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual(["p1", "p2"]);
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null });
+    }
+  });
+
+  it("stays inert when rescue.enabled is false", () => {
+    __setRescueHostHooks({ pid: 9999 });
+    const dir = rescueProfile({ patch: PATCH, state: crashedState() });
+    try {
+      const { disposers } = mountedOf(dir, { config: { rescue: { enabled: false } } });
+      try {
+        expect(rescuePatchOf(dir).includes("disabled: true")).toBe(false);
+        expect(rescueStateOf(dir).phase).toBe("idle");
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null });
+    }
+  });
+
+  it("records nothing when the profile has no patch layer (default fixtures stay inert)", () => {
+    const { ctx } = mockCtx();
+    expect(() => apply(ctx, {})).not.toThrow();
+    // the default baseUrl points at lib/, which has no cordis.patch.yml —
+    // the watchdog must skip it entirely
+    expect(existsSync(join(process.cwd(), "lib", ".dsh-rescue.json"))).toBe(false);
+  });
+});
+
+describe("rescue mode routes", () => {
+  const PATCH = [
+    "- id: ext-center",
+    "  name: better-deepseek-harness",
+    "- id: broken",
+    "  name: broken-plugin",
+    "- id: fine",
+    "  name: fine-plugin",
+    ""
+  ].join("\n");
+
+  async function mountedRescue(dir: string, options: { loaderEntries?: MockOptions["loaderEntries"] } = {}) {
+    const { ctx, disposers } = mockCtx({
+      baseUrl: pathToFileURL(join(dir, "package.json")).href,
+      loaderEntries: options.loaderEntries
+    });
+    apply(ctx, { rescue: { enabled: true, settleMs: 3000 } });
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    return {
+      disposers,
+      handler: register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>
+    };
+  }
+
+  it("serves an active status with the disabled plugin list", async () => {
+    const dir = rescueProfile({
+      patch: PATCH,
+      state: JSON.stringify({
+        version: 1,
+        phase: "applied",
+        failure: { kind: "crash", message: "previous boot did not complete" },
+        plugins: [
+          { name: "broken-plugin", kind: "patch", reason: { code: "load-failed", detail: "MODULE_NOT_FOUND" }, id: "broken", rowIds: ["broken"] },
+          { name: "fine-plugin", kind: "patch", reason: { code: "crash" }, id: "fine", rowIds: ["fine"] }
+        ],
+        appliedAt: "2026-01-01T00:00:00.000Z",
+        boot: { pid: 1, startedAt: 0, healthy: false, healthyAt: null }
+      })
+    });
+    try {
+      const { handler, disposers } = await mountedRescue(dir);
+      try {
+        const res = fakeRes();
+        await handler(fakeReq("GET", "/ext/api/rescue/status", "127.0.0.1"), res);
+        expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+        const body = JSON.parse(res.end.mock.calls[0][0]);
+        expect(body.ok).toBe(true);
+        expect(body.value.active).toBe(true);
+        expect(body.value.plugins.map((plugin: { name: string }) => plugin.name)).toEqual(["broken-plugin", "fine-plugin"]);
+        expect(body.value.failure.message).toContain("did not complete");
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports rescue-inactive when resolving without an applied rescue", async () => {
+    const dir = rescueProfile({ patch: PATCH, state: healthyState() });
+    try {
+      const { handler, disposers } = await mountedRescue(dir);
+      try {
+        const res = fakeRes();
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/apply", { enable: ["broken-plugin"] }), res);
+        const body = JSON.parse(res.end.mock.calls[0][0]);
+        expect(body.ok).toBe(false);
+        expect(body.error.code).toBe("rescue-inactive");
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the selection, keeps the rest disabled, and reloads the page in desktop mode", async () => {
+    __setRescueHostHooks({ pid: 9999, isDesktop: true });
+    // a healthy previous boot: the watchdog stays hands-off, so the API
+    // trigger is what applies rescue in this scenario
+    const dir = rescueProfile({ patch: PATCH, state: healthyState() });
+    try {
+      const { handler, disposers } = await mountedRescue(dir);
+      try {
+        // trigger rescue through the API, then resolve with one plugin selected
+        const triggerRes = fakeRes();
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/trigger", {}), triggerRes);
+        const triggerBody = JSON.parse(triggerRes.end.mock.calls[0][0]);
+        expect(triggerBody.ok).toBe(true);
+        expect(triggerBody.value.applied).toBe(true);
+        expect(triggerBody.value.active).toBe(true);
+
+        const res = fakeRes();
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/apply", { enable: ["fine-plugin"] }), res);
+        const body = JSON.parse(res.end.mock.calls[0][0]);
+        expect(body.ok).toBe(true);
+        expect(body.value.reload).toBe("page");
+        expect(body.value.restored).toEqual(["fine-plugin"]);
+
+        const raw = rescuePatchOf(dir);
+        expect(rowDisabled(raw, "fine")).toBe(false);
+        expect(rowDisabled(raw, "broken")).toBe(true);
+        expect(rowDisabled(raw, "ext-center")).toBe(false);
+        expect(rescueStateOf(dir).phase).toBe("idle");
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null, isDesktop: null });
+    }
+  });
+
+  it("keeps everything disabled and skips the reload for an empty selection", async () => {
+    __setRescueHostHooks({ pid: 9999, isDesktop: true });
+    const dir = rescueProfile({ patch: PATCH, state: crashedState() });
+    try {
+      const { handler, disposers } = await mountedRescue(dir);
+      try {
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/trigger", {}), fakeRes());
+        const res = fakeRes();
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/apply", { enable: [] }), res);
+        const body = JSON.parse(res.end.mock.calls[0][0]);
+        expect(body.ok).toBe(true);
+        expect(body.value.reload).toBe("none");
+        expect(body.value.restored).toEqual([]);
+        const raw = rescuePatchOf(dir);
+        expect(rowDisabled(raw, "broken")).toBe(true);
+        expect(rowDisabled(raw, "fine")).toBe(true);
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null, isDesktop: null });
+    }
+  });
+
+  it("schedules a host restart when resolving outside the desktop host", async () => {
+    const scheduleRestart = vi.fn();
+    __setRescueHostHooks({ pid: 9999, isDesktop: false, scheduleRestart });
+    const dir = rescueProfile({ patch: PATCH, state: crashedState() });
+    try {
+      const { handler, disposers } = await mountedRescue(dir);
+      try {
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/trigger", {}), fakeRes());
+        const res = fakeRes();
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/apply", { enable: ["fine-plugin"] }), res);
+        const body = JSON.parse(res.end.mock.calls[0][0]);
+        expect(body.ok).toBe(true);
+        expect(body.value.reload).toBe("process");
+        expect(scheduleRestart).toHaveBeenCalledTimes(1);
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null, isDesktop: null, scheduleRestart: null });
+    }
+  });
+
+  it("rejects an over-long enable list", async () => {
+    __setRescueHostHooks({ pid: 9999, isDesktop: true });
+    const dir = rescueProfile({ patch: PATCH, state: crashedState() });
+    try {
+      const { handler, disposers } = await mountedRescue(dir);
+      try {
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/trigger", {}), fakeRes());
+        const res = fakeRes();
+        await handler(fakeReqWithBody("POST", "/ext/api/rescue/apply", { enable: Array.from({ length: 300 }, (_, i) => "p" + i) }), res);
+        const body = JSON.parse(res.end.mock.calls[0][0]);
+        expect(body.ok).toBe(false);
+        expect(body.error.code).toBe("bad-request");
+      } finally {
+        disposeAll(disposers);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null, isDesktop: null });
     }
   });
 });

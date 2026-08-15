@@ -68,6 +68,80 @@ better-deepseek-harness/
 └── CONTRIBUTING.md
 ```
 
+## HTTP API（主机侧，前缀 /ext/api）
+
+> 响应统一为 `{ok: true, value}` 或 `{ok: false, error: {code, message}}`。
+
+### 状态与配置
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /ext/api/state` | 全量状态：技能列表、插件安装记录、加载器条目、配置，以及 `limits`（各上限与客户端轮询间隔，见「部署配置」） |
+| `POST /ext/api/config` | 写 `ext-center` 设置命名空间（`allowLan` / `skillRoot` / `customSkillDirs` / `treeRoot` / `vision` / `tavily`） |
+
+### 文件树
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /ext/api/tree?path=...` | 列出根目录下的一级条目（type / size / mtime / children 计数、`truncated` 截断标记与 `maxEntries` 上限）；根目录解析：`treeRoot` 设置 → 最近注册的工作区 → 进程工作目录 |
+| `GET /ext/api/tree/content?path=...` | 读取树根内一个文本文件（拒绝目录 / 超大 / 含 NUL 的二进制），供编辑器打开 |
+| `POST /ext/api/tree/write` | `{path, content}` 原子写回树根内既有文件（临时文件 + rename；同样有大小与二进制防护） |
+
+### 终端
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /ext/api/terminal/list` | 全部终端会话（id / kind / cwd / alive / exitCode / createdAt） |
+| `POST /ext/api/terminal/create` | `{kind: 'cmd'\|'powershell'}` 新建终端（上限 = `terminal.maxSessions`，默认 8；cwd = 文件树根），返回 `{id, kind, cwd}` |
+| `POST /ext/api/terminal/write` | `{id, data}` 写入输入（单次 ≤ 4096 字符；已退出终端拒绝） |
+| `POST /ext/api/terminal/resize` | `{id, cols, rows}` 调整终端尺寸（pty 模式生效） |
+| `POST /ext/api/terminal/kill` | `{id}` 关闭终端（幂等） |
+| `GET /ext/api/terminal/output?id=..&after=..` | 轮询增量输出：`after` 为客户端已读字节 offset，返回 `{alive, exitCode, text, cursor}`；`cursor` 是流的权威 offset（环形缓冲区截断后客户端以它重置，而不是自增） |
+
+### Git
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /ext/api/git/status` | 仓库根、分支、上游、领先/落后、更改列表（含 staged / unstaged / untracked / 重命名 / 冲突标记） |
+| `GET /ext/api/git/diff?path=..&staged=0\|1` | 单文件 diff（结构化为 meta/hunk/ctx/add/del 行，带双侧行号；未跟踪文件按全新增合成；合并冲突按 combined 原样返回） |
+| `GET /ext/api/git/log?n=30` | 最近提交（oid / short / author / time / subject） |
+| `GET /ext/api/git/branches` | 分支列表（含 current 标记） |
+| `POST /ext/api/git/stage` | `{paths:[...]}` 暂存（git add） |
+| `POST /ext/api/git/stage-all` | 全部暂存（git add -A） |
+| `POST /ext/api/git/unstage` | `{paths:[...]}` 取消暂存（git restore --staged） |
+| `POST /ext/api/git/unstage-all` | 全部取消暂存（git reset） |
+| `POST /ext/api/git/commit` | `{message}` 提交（git commit -m） |
+| `POST /ext/api/git/discard` | `{paths:[...]}` 放弃更改（git checkout --；未跟踪文件直接删除，拒绝目录） |
+| `POST /ext/api/git/checkout` | `{branch}` 切换分支（名称白名单校验） |
+| `POST /ext/api/git/pull` | 拉取（--ff-only，超时 = `git.timeoutMs`，默认 60 秒） |
+| `POST /ext/api/git/push` | 推送（超时 = `git.timeoutMs`，默认 60 秒） |
+
+### MCP
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /ext/api/mcp/list` | 服务器列表（面板管理的行 + 外部手写行，含配置摘要与加载器状态）与 `max`（部署上限） |
+| `POST /ext/api/mcp/add` | `{name, transport, command?, args?, env?, cwd?, url?, headers?, toolCallTimeoutMs?}` 添加服务器（写入 patch 行并热生效） |
+| `POST /ext/api/mcp/remove` | `{name}` 移除服务器（删除 patch 行并热生效） |
+| `POST /ext/api/mcp/set-enabled` | `{name, enabled}` 启用 / 停用（patch 行 disabled 标记） |
+
+### 技能与插件
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /ext/api/skill/install` | `{name, text?\|url?\|path?}` 安装技能 |
+| `POST /ext/api/skill/uninstall` | `{name}` 卸载技能 |
+| `POST /ext/api/plugin/install` | `{source: {kind: 'npm'\|'url'\|'folder'\|'git', spec?\|url?\|path?}}` 安装插件 |
+| `POST /ext/api/plugin/uninstall` | `{name}` 卸载插件（移除补丁行 + 包目录） |
+| `POST /ext/api/plugin/set-enabled` | `{name, enabled}` 启用 / 停用插件 |
+
+### 对话与归档
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /ext/api/input/optimize` | `{text, provider, model, sessionId?, reasoningEffort?}` 用指定（当前会话所选）模型优化输入，返回 `{text}` |
+| `POST /ext/api/archive/delete` | `{ids:[...]}` 批量永久删除已归档会话（必须位于归档集合；仍在运行 / 加载中的会话跳过），返回 `{deleted, skipped, count}` |
+
 ## 开发
 
 - `npm run typecheck`（strict 类型检查）、`npm test`（vitest）、`npm run build`（tsc 发射 `src/` → `lib/`）、`npm run check`（typecheck + test）——完整流程与构建细节见 docs/development.md。
@@ -91,7 +165,7 @@ better-deepseek-harness/
 - 显式优先：默认值在实现里显式解析，不在 `run()` 里藏 `?? default`。
 - TODO 标记：`FIXME`（阻塞发布）/ `TODO`（尽快修）/ `XXX`（有生之年）。
 - 文件以单个换行结尾；提交前 `git diff --cached --check`。
-- 渐进式 TypeScript：`src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts`、`src/terminal-buffer.ts` 已是完整 TypeScript（strict 通过）；`src/index.js` 与 `src/client.js` 仍是带 JSDoc 的 JS（`checkJs` 未开启）。迁移路径见 docs/development.md——新增代码写 `.ts`。
+- 渐进式 TypeScript：`src/tool-args.ts`、`src/ansi.ts`、`src/tavily.ts`、`src/terminal-buffer.ts`、`src/rescue.ts` 已是完整 TypeScript（strict 通过）；`src/index.js` 与 `src/client.js` 仍是带 JSDoc 的 JS（`checkJs` 未开启）。迁移路径见 docs/development.md——新增代码写 `.ts`。
 
 ## 提交与发布
 
