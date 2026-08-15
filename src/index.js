@@ -200,6 +200,7 @@ const DEFAULTS = Object.freeze({
     model: "",
     prompt: "",
     apiUrl: "",
+    apiKey: "",
     maxImages: 4
   })
 });
@@ -311,6 +312,7 @@ const SettingsSchema = z.object({
     model: z.string().default(""),
     prompt: z.string().default(""),
     apiUrl: z.string().default(DEFAULTS.vision.apiUrl),
+    apiKey: z.string().default(DEFAULTS.vision.apiKey),
     maxImages: z.number().default(DEFAULTS.vision.maxImages)
   }).default({ ...DEFAULTS.vision })
 });
@@ -1674,6 +1676,7 @@ function visionConfigOf(config, cfg) {
     model: typeof raw.model === "string" ? raw.model.trim() : "",
     prompt: typeof raw.prompt === "string" && raw.prompt.trim() !== "" ? raw.prompt.trim() : VISION_DEFAULT_PROMPT,
     apiUrl: typeof raw.apiUrl === "string" ? raw.apiUrl.trim() : "",
+    apiKey: typeof raw.apiKey === "string" ? raw.apiKey.trim() : "",
     maxImages
   };
 }
@@ -1755,11 +1758,13 @@ async function customVisionText(ctx, vision, imageBlock, maxTokens, signal) {
     throw new Error("vision API URL must start with http:// or https://");
   }
   const dataUrl = await imageDataUrl(ctx, imageBlock.attachment, signal);
+  const headers = { "content-type": "application/json" };
+  if (vision.apiKey) headers.authorization = `Bearer ${vision.apiKey}`;
   let res;
   try {
     res = await fetch(endpoint, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({
         model: vision.model,
         messages: [{
@@ -2461,7 +2466,15 @@ function snapshotState(cx) {
     pluginRoot: layout.pluginRoot,
     patchFile: layout.patchFile,
     skillRoots: skillRootsOf(layout, config).map((r) => ({ path: r.path, source: r.source })),
-    config,
+    config: (() => {
+      // The vision API key is write-only: never echo it back to the browser;
+      // surface only whether one is configured.
+      const vision = config.vision && typeof config.vision === "object" ? { ...config.vision } : {};
+      const apiKey = typeof vision.apiKey === "string" ? vision.apiKey : "";
+      delete vision.apiKey;
+      vision.apiKeyConfigured = apiKey !== "";
+      return { ...config, vision };
+    })(),
     settingsWritable: (() => {
       let settings;
       try {
@@ -2652,7 +2665,21 @@ const routes = {
           if (key === "skillRoot" && typeof value !== "string") throw err("bad-request", "skillRoot must be a string");
           if (key === "treeRoot" && typeof value !== "string") throw err("bad-request", "treeRoot must be a string");
           if (key === "customSkillDirs" && (!Array.isArray(value) || value.some((v) => typeof v !== "string"))) throw err("bad-request", "customSkillDirs must be an array of strings");
-          if (key === "vision" && (typeof value !== "object" || value === null || Array.isArray(value))) throw err("bad-request", "vision must be an object");
+          if (key === "vision") {
+            if (typeof value !== "object" || value === null || Array.isArray(value)) throw err("bad-request", "vision must be an object");
+            // The API key is write-only from the client's perspective: only a
+            // non-empty trimmed string updates the stored key; blank, absent,
+            // or wrongly-typed entries leave the stored key untouched.
+            if ("apiKey" in value) {
+              if (typeof value.apiKey !== "string" || value.apiKey.trim() === "") {
+                delete value.apiKey;
+              } else {
+                const trimmed = value.apiKey.trim();
+                if (trimmed.length > 4096 || trimmed.includes("\0")) throw err("bad-request", "vision.apiKey is invalid");
+                value.apiKey = trimmed;
+              }
+            }
+          }
           patch[key] = value;
         }
       }

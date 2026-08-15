@@ -47,8 +47,8 @@ function mockCtx(options: MockOptions = {}) {
   const settings = {
     register: vi.fn(() => () => {}),
     get: vi.fn(() => options.stored ?? {}),
-    update: vi.fn(async () => {}),
-    mutate: vi.fn(async () => {}),
+    update: vi.fn(async (_ns: string, _patch: Record<string, unknown>) => {}),
+    mutate: vi.fn(async (_ns: string, _ops: Array<Record<string, unknown>>) => {}),
     writable: true
   };
   const skills = { registerProvider: vi.fn(() => () => {}) };
@@ -241,7 +241,15 @@ describe("llm/stream image transcription wrapper", () => {
     vi.stubGlobal("fetch", fetchMock);
     try {
       const listener = captureListener({
-        stored: { vision: { enabled: true, provider: "custom", model: "custom-vlm", apiUrl: "http://vision.test/v1/chat/completions" } },
+        stored: {
+          vision: {
+            enabled: true,
+            provider: "custom",
+            model: "custom-vlm",
+            apiUrl: "http://vision.test/v1/chat/completions",
+            apiKey: "sk-test-123"
+          }
+        },
         llm,
         attachments: { readImage }
       });
@@ -253,6 +261,8 @@ describe("llm/stream image transcription wrapper", () => {
       for await (const chunk of result as AsyncIterable<unknown>) void chunk;
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(fetchMock.mock.calls[0][0]).toBe("http://vision.test/v1/chat/completions");
+      const init = fetchMock.mock.calls[0][1] as { headers: Record<string, string> };
+      expect(init.headers.authorization).toBe("Bearer sk-test-123");
       const rewritten = calls[0] as unknown as {
         messages: Array<{ content: Array<{ type: string; text?: string }> }>;
       };
@@ -612,5 +622,55 @@ describe("config route", () => {
     expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{ op: "set", path: ["allowLan"], value: true }]);
     const body = JSON.parse(res.end.mock.calls[0][0]);
     expect(body.ok).toBe(true);
+  });
+
+  it("stores a trimmed vision apiKey from the client", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", {
+      vision: { enabled: true, provider: "custom", model: "vm", apiUrl: "http://x.test", apiKey: "  sk-123  " }
+    }), res);
+    expect(settings.mutate).toHaveBeenCalledWith(SETTINGS_NS, [{
+      op: "set",
+      path: ["vision"],
+      value: { enabled: true, provider: "custom", model: "vm", apiUrl: "http://x.test", apiKey: "sk-123" }
+    }]);
+    expect(JSON.parse(res.end.mock.calls[0][0]).ok).toBe(true);
+  });
+
+  it("drops a blank apiKey so the stored key is kept", async () => {
+    const { settings, handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", {
+      vision: { enabled: true, provider: "custom", model: "vm", apiUrl: "http://x.test", apiKey: "   " }
+    }), res);
+    const ops = settings.mutate.mock.calls[0][1] as Array<{ value: Record<string, unknown> }>;
+    expect(ops[0].value).not.toHaveProperty("apiKey");
+    expect(JSON.parse(res.end.mock.calls[0][0]).ok).toBe(true);
+  });
+
+  it("rejects an apiKey with control bytes", async () => {
+    const { handler } = await mountedConfigHandler();
+    const res = fakeRes();
+    await handler(fakeReqWithBody("POST", "/ext/api/config", {
+      vision: { enabled: true, provider: "custom", apiKey: "sk-\0-bad" }
+    }), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("bad-request");
+  });
+
+  it("never echoes the stored apiKey back through /ext/api/state", async () => {
+    const { ctx } = mockCtx({ stored: { vision: { enabled: true, provider: "custom", apiKey: "secret-123", apiUrl: "http://x.test" } } });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReq("GET", "/ext/api/state", "127.0.0.1"), res);
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(true);
+    const vision = body.value.config.vision as Record<string, unknown>;
+    expect(vision).not.toHaveProperty("apiKey");
+    expect(vision.apiKeyConfigured).toBe(true);
   });
 });
