@@ -30,6 +30,7 @@
 | 拦截工具调用 | `ctx.on("tools/execute", ...)` 瀑布 | 参数校验前修复 description 缺失与损坏 JSON（与 `dsh-tool-call-timeout-policy` 同机制） |
 | 拦截模型请求 | `ctx.on("llm/stream", ...)` 瀑布 | 含图片的请求先由视觉模型转述成文字；监听器返回异步可迭代对象（async generator），与瀑布“最外层返回值必须是 async iterable”的约定一致 |
 | 模型搜索工具 | `ctx.tools.register` + `ctx.inject(["systemPrompt"], ...)` 的 `systemPrompt.section` | `ext-center.tavily.enabled` 开启时注册 `tavily_search` 工具与提示引导（设置变更经 settings 命名空间 owner 的 `watch` 联动注册/注销）；执行时读实时设置，未启用/未配置/调用失败抛清晰错误，由 agent loop 转为工具错误结果——模型看到提示后凭已有知识作答，不阻塞正常回答 |
+| 人类命令 | `ctx.get("commands")` 存在时 `commands.register(...)` | `/rescue` 命令（状态 / apply / trigger）：无 GUI 宿主的急救交互面（dsh-TUI 等把注册表命令并入斜杠菜单）；Web 宿主也有该注册表，命令与对话框并存互不干扰 |
 | 图片准入桥 | 包装 `ctx.llm.resolveModelInfo` | `vision.enabled` 时给当前模型信息追加 `image` 模态，通过宿主 api-gateway 的图片准入校验（`MODEL_DOES_NOT_SUPPORT_IMAGES`），让带图请求进入上面的 llm/stream 转述瀑布；关闭时原样返回 |
 | 工作区解析 | `ctx.workspaceRegistry` | 文件树根目录（未配置时的默认来源） |
 | 会话输入区 | `ctx.slots.inject("conversation.input.right", ...)` | 注册「优化输入」按钮；插槽渲染位置在上下文按钮左侧，因此真实 DOM 按钮由组件插入到发送按钮与上下文按钮之间；点击后经 `/ext/api/input/optimize` 用当前会话所选模型优化输入 |
@@ -90,13 +91,23 @@ DeepSeek Harness 的启动审计（`assertEntriesActivated`）把任何第三方
 3. 启动成功后客户端轮询 `/ext/api/rescue/status`（5s），`phase === "applied"` 时经 sidebar footer 挂载点弹出全局对话框：列出每个被禁用插件的名称与原因（fiber 失败时尽力抓取真实报错），可多选，提供「全部恢复」「保持禁用」「启用所选并重新加载」；
 4. 用户确认后 `POST /ext/api/rescue/apply { enable: [...] }` 事务性写回补丁（所选插件移除 disabled、其余保持禁用），状态清为 idle，然后按宿主形态刷新页面或重启进程；空选择 = 保持禁用、不重载。重启/刷新前把当前 boot 记为 healthy，避免「恢复 → 重启 → 又被判为启动失败」的循环；真正失败的下一启动仍会留下自己的未定稿标记，从而再次进入急救。
 
-**状态机**（`phase`）：`idle`（正常监控）→ `applied`（急救已生效，弹窗待决）→ 用户确认后回 `idle`。`applied` 状态下再次启动不会重复禁用（最小化配置已持久化），弹窗继续出现直到用户决定。手动触发走 `POST /ext/api/rescue/trigger`（插件页「进入急救模式」按钮），与自动触发同一路径。
+**状态机**（`phase`）：`idle`（正常监控）→ `applied`（急救已生效，弹窗待决）→ 用户确认后回 `idle`。`applied` 状态下再次启动不会重复禁用（最小化配置已持久化），弹窗继续出现直到用户决定。手动触发走 `POST /ext/api/rescue/trigger`（插件页「进入急救模式」按钮）或 `/rescue trigger` 命令（无 GUI 宿主），与自动触发同一路径。**恢复入口随宿主形态切换**：Web 宿主用对话框 + `/ext/api/rescue/apply`；无 `webServer` 的宿主（如 dsh-TUI）用 `/rescue apply` 命令——两者调用同一组纯函数（`buildRestorePlan` / `resolveRescue`），行为一致。
+
+**前门 bundle 保护**：无 `webServer` 服务的宿主里，急救把「把自己挂载为加载器行的第三方 bundle」（insert 行 `name` 等于自身包名）判定为宿主界面本身（例如 dsh-TUI 的 `dsh-tui` 行），其全部行 id 加入保护名单，禁用计划跳过——否则急救会禁用掉终端界面自身，而终端没有恢复对话框，宿主将永远无法恢复。Web 宿主总是有 harness 核心的 web 前门，不做此保护。显式名单 `rescue.protectBundles` 兜底追加。
 
 **安全与健壮性**：本插件自身行与 harness 核心行永不被禁用，急救不依赖任何第三方插件（其全部功能——路由、设置、终端、git、MCP、视觉、Tavily——照常工作）；看门狗与侧车写入全程异常安全（任何失败只记日志，绝不把本插件自身的 apply 弄挂，否则启动审计会连带杀死急救本身）；恢复只移除急救自己添加的禁用标记（bundle 禁用行要求恰好 `{id, disabled: true}` 两键才删除，手改过的行不删）。
 
+## 无头 / TUI 宿主适配（headless & TUI hosts）
+
+[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 一类的终端宿主用 `dsh-base` 组合自建宿主进程，**不挂载 `webServer` 服务**。本插件的静态注入只声明必需的 `tools`，`webServer` 全部走 `ctx.get()` 守卫——因此在这样的宿主里插件照常加载，不依赖 GUI 的功能原样工作：
+
+- **急救模式**：看门狗、`.dsh-rescue.json` 侧车、补丁写入与 settle 判定全部是宿主侧逻辑，无 web 依赖；恢复交互改走 **`/rescue` 斜杠命令**（挂载 dsh-commands 注册表时自动注册，dsh-TUI 会把注册表命令并入其斜杠菜单并分发）：`/rescue`（状态）、`/rescue apply all|none|<插件名,...>`（恢复选择，空选择 = 保持禁用）、`/rescue trigger`（手动进入）。命令输出即状态视图的文本渲染，恢复走与 `/ext/api/rescue/apply` 完全相同的 `resolveRescue` 路径（含事务性补丁写入与按宿主形态重载：桌面刷新页面 / 命令行宿主重启进程）。
+- **前门保护**：见「急救模式 → 前门 bundle 保护」。
+- **其余宿主侧功能**：设置命名空间（`dsh-base` 自带 `settings` 服务）、自定义技能目录、`tavily_search` 工具与提示引导、工具参数修复、图片转述与视觉能力桥——全部按原逻辑注册，仅 `/ext/api` 路由、终端/git/MCP 面板端点与 Web 客户端表面不挂载。
+
 ## 配置与安全不变量
 
-部署可调项（树/终端/git/mcp/vision 上限、修复开关与占位文案、客户端轮询间隔、急救模式开关与启动窗口）全部是 `ext-center` 行 `config:` 块中经 schemastery 校验的字段（`ConfigSchema`）：每个字段自带默认值与合法范围，非法值让插件**加载失败并给出明确报错**（响亮失败，不静默漂移）。
+部署可调项（树/终端/git/mcp/vision 上限、修复开关与占位文案、客户端轮询间隔、急救模式开关与启动窗口、急救保护名单 `rescue.protectBundles`）全部是 `ext-center` 行 `config:` 块中经 schemastery 校验的字段（`ConfigSchema`）：每个字段自带默认值与合法范围，非法值让插件**加载失败并给出明确报错**（响亮失败，不静默漂移）。
 
 安全不变量保持固定、不可配置：
 
@@ -111,7 +122,7 @@ DeepSeek Harness 的启动审计（`assertEntriesActivated`）把任何第三方
 ## 模块职责
 
 - `src/index.js`：宿主侧入口，导出 `{ NAME, SETTINGS_NS, apply, inject, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks }`；`apply(ctx, config)` 是插件主体，按固定顺序注册各效应（**急救看门狗最先跑**，同步补丁写入要抢在启动审计前），并提供 `/ext/api/input/optimize` 输入优化端点、`/ext/api/archive/delete` 归档删除端点与 `/ext/api/rescue/*` 急救端点。后五个导出是内部件（安装流水线 / 急救宿主副作用），导出仅为测试可及（行为规格在 `tests/host-wiring.spec.ts`）。
-- `src/rescue.ts`：纯函数模块（状态机 `emptyRescueState`/`withBoot`/`markBootHealthy`/`previousBootFailed`/`sanitizeRescueState`、第三方条目分类、重复 id 检测、`buildRescuePlan` 禁用计划、`buildRestorePlan` 恢复计划、`rescueStatusView`），无任何 I/O，是急救逻辑的主测试战场（`tests/rescue.spec.ts`）。
+- `src/rescue.ts`：纯函数模块（状态机 `emptyRescueState`/`withBoot`/`markBootHealthy`/`previousBootFailed`/`sanitizeRescueState`、第三方条目分类、重复 id 检测、`buildRescuePlan` 禁用计划（含 `protectLayerNames` 前门保护参数）、`buildRestorePlan` 恢复计划、`rescueStatusView`），无任何 I/O，是急救逻辑的主测试战场（`tests/rescue.spec.ts`）。
 - `src/compat.ts`：纯函数模块（`DSH_WEB_UI_FAMILY` 家族注册表、`detectDshWebUi` 存在性检测、`dshWebUiSuppression` 界面让位映射），无任何 I/O，是 dsh-web-ui 兼容决策的主测试战场（`tests/compat.spec.ts`）；浏览器侧内联同表（`tests/compat-client.spec.ts` 防漂移）。
 - `src/client.js`：浏览器侧（见上），另注册「优化输入」按钮并定位到发送按钮与上下文按钮之间。
 - `src/tool-args.ts`：纯函数模块（`tryParseJsonObject` / `repairToolArguments`），无任何 I/O，是工具参数单测的主战场。

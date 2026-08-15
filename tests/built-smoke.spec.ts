@@ -34,7 +34,7 @@ describe("built lib/ artifact", () => {
     expect(() => apply(ctx, {})).not.toThrow();
     expect(NAME).toBe("better-deepseek-harness");
     expect(SETTINGS_NS).toBe("ext-center");
-    expect(inject).toEqual(["webServer", "tools"]);
+    expect(inject).toEqual(["tools"]);
   });
 
   it("loads the compiled tool-args.js", async () => {

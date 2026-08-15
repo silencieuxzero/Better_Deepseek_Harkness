@@ -8,6 +8,11 @@
 
 ### 新增
 
+- **dsh-TUI / 无头宿主适配**：对 [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 类终端宿主（组合里没有 `webServer` 服务）完整支持，所有不依赖 GUI 的功能原样工作：
+  - `webServer` 改为可选注入（静态注入只保留 `tools`）：无 web 层的宿主里插件照常加载，急救看门狗、设置命名空间、技能目录、Tavily 工具、工具参数修复、图片转述全部继续工作，仅 `/ext/api` 路由不挂载；
+  - **`/rescue` 斜杠命令**：宿主挂载 dsh-commands 注册表时自动注册（dsh-TUI 会把注册表命令并入其斜杠菜单）——`/rescue`（状态）、`/rescue apply all|none|<插件名,...>`（恢复选择）、`/rescue trigger`（手动进入急救），恢复逻辑与 Web 对话框走同一套纯函数；
+  - **前门 bundle 自动保护**：无 `webServer` 的宿主里，第三方 bundle 若把自己挂载为加载器行（insert 行 `name` 等于自身包名），急救模式判定它就是宿主界面本身，**永不禁用**（否则急救会禁用掉 TUI 自身、且终端里没有恢复对话框，宿主将无法恢复）；显式兜底配置 `rescue.protectBundles` 可追加保护名单；
+  - 配置：`ext-center` 行 `rescue.protectBundles`（字符串数组，默认空）。`src/rescue.ts` 的 `buildRescuePlan` 新增保护参数，由 `tests/rescue.spec.ts` 与 `tests/host-wiring.spec.ts` 新用例覆盖。
 - **急救模式（rescue mode）**：DeepSeek Harness 启动失败（插件冲突、第三方插件未构建导致加载失败、重复的加载器条目 id，或上次启动在启动窗口内崩溃退出）时自动进入急救模式：
   - 除本插件外的所有第三方插件默认全部禁用（patch 行原地加 `disabled: true`；第三方 profile bundle 按其自身补丁行 id 追加禁用行），经 `cordis.patch.yml` 热生效，以最小化配置继续运行——无需手动改文件；
   - 启动成功后弹出对话框，列出每个被禁用插件的名称与禁用原因（fiber 失败时尽力附上加载器自己的报错），可多选重新启用，并提供「全部恢复」「保持禁用」「启用所选并重新加载」快捷选项；

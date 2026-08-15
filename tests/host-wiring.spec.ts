@@ -32,6 +32,10 @@ interface MockOptions {
   } | undefined;
   /** value returned for ctx.get("sessions") (defaults to undefined). */
   sessions?: { get: (id: string) => unknown } | undefined;
+  /** when true, ctx.get("webServer") reports the service as absent (headless/TUI host). */
+  noWebServer?: boolean;
+  /** value returned for ctx.get("commands") (defaults to undefined — no command registry). */
+  commands?: { register: ReturnType<typeof vi.fn> };
   /** when true, ctx.inject stores the callback instead of running it now. */
   deferInject?: boolean;
   /** when true, ctx.get("settings") throws like a missing cordis service. */
@@ -73,6 +77,12 @@ function mockCtx(options: MockOptions = {}) {
     resolve: vi.fn(() => undefined)
   };
   const pendingInject: Array<(child: unknown) => void> = [];
+  const webServer = {
+    register: vi.fn((entry: { path: string; handler: (req: unknown, res: unknown) => Promise<void> }) => {
+      registrations.routes.push(entry);
+      return () => {};
+    })
+  };
   const ctx = {
     baseUrl: options.baseUrl ?? pathToFileURL(join(process.cwd(), "lib", "index.js")).href,
     get: vi.fn((name: string) => {
@@ -88,6 +98,8 @@ function mockCtx(options: MockOptions = {}) {
       if (name === "workspaceRegistry") return options.workspaceRegistry;
       if (name === "sessionPersistence") return options.sessionPersistence;
       if (name === "sessions") return options.sessions;
+      if (name === "webServer") return options.noWebServer ? undefined : webServer;
+      if (name === "commands") return options.commands;
       return undefined;
     }),
     inject: vi.fn((_names: string[], callback: (child: unknown) => void) => {
@@ -114,12 +126,7 @@ function mockCtx(options: MockOptions = {}) {
       get: vi.fn(() => undefined),
       register: vi.fn(() => () => {})
     },
-    webServer: {
-      register: vi.fn((entry: { path: string; handler: (req: unknown, res: unknown) => Promise<void> }) => {
-        registrations.routes.push(entry);
-        return () => {};
-      })
-    }
+    webServer
   };
   return { ctx, settings, skills, disposers, registrations, pendingInject };
 }
@@ -208,7 +215,7 @@ describe("apply() wiring", () => {
     expect(typeof apply).toBe("function");
     expect(NAME).toBe("better-deepseek-harness");
     expect(typeof SETTINGS_NS).toBe("string");
-    expect(inject).toEqual(["webServer", "tools"]);
+    expect(inject).toEqual(["tools"]);
     expect(typeof __setRescueHostHooks).toBe("function");
   });
 
@@ -245,6 +252,95 @@ describe("apply() wiring", () => {
     const { ctx, settings } = mockCtx();
     apply(ctx, {});
     expect(settings.register).toHaveBeenCalledWith(SETTINGS_NS, expect.anything(), expect.anything());
+  });
+
+  it("loads without a webServer service (headless/TUI host) and skips the API routes", () => {
+    // dsh-TUI-style compositions mount no webServer; the plugin must still
+    // load so the rescue watchdog, settings, skills, Tavily and tool repair
+    // keep working, and only the /ext/api routes go missing.
+    const { ctx, settings, skills, registrations } = mockCtx({ noWebServer: true });
+    expect(() => apply(ctx, {})).not.toThrow();
+    expect(registrations.routes).toHaveLength(0);
+    expect(settings.register).toHaveBeenCalledWith(SETTINGS_NS, expect.anything(), expect.anything());
+    expect(skills.registerProvider).toHaveBeenCalledTimes(1);
+    expect(registrations.events).toContain("tools/execute");
+  });
+
+  it("registers the /rescue command when the command registry is mounted", () => {
+    const registered: Array<{ name: string; handler: (invocation: { rawInput: string }) => unknown }> = [];
+    const commands = { register: vi.fn((definition: { name: string; handler: (invocation: { rawInput: string }) => unknown }) => {
+      registered.push(definition);
+      return () => {};
+    }) };
+    const { ctx, disposers } = mockCtx({ commands });
+    expect(() => apply(ctx, {})).not.toThrow();
+    expect(commands.register).toHaveBeenCalledTimes(1);
+    expect(registered[0]?.name).toBe("rescue");
+    expect(typeof registered[0]?.handler).toBe("function");
+    disposeAll(disposers);
+  });
+
+  it("/rescue status reports idle when no rescue state exists", async () => {
+    const registered: Array<{ name: string; handler: (invocation: { rawInput: string }) => unknown }> = [];
+    const commands = { register: vi.fn((definition: { name: string; handler: (invocation: { rawInput: string }) => unknown }) => {
+      registered.push(definition);
+      return () => {};
+    }) };
+    const { ctx, disposers } = mockCtx({ commands });
+    apply(ctx, {});
+    const result = await registered[0]!.handler({ rawInput: "status" });
+    expect(result).toMatchObject({ kind: "success" });
+    expect(String((result as { text: string }).text)).toContain("idle");
+    disposeAll(disposers);
+  });
+
+  it("/rescue apply restores the selected plugins from an applied rescue state", async () => {
+    __setRescueHostHooks({ pid: 9999, isDesktop: true });
+    const dir = rescueProfile({
+      patch: [
+        "- insert:",
+        "    - id: ext-center",
+        "      name: better-deepseek-harness",
+        "    - id: boom-plugin",
+        "      name: boom-plugin",
+        "      disabled: true",
+        "- id: another-off",
+        "  name: another-off",
+        "  disabled: true"
+      ].join("\n"),
+      state: JSON.stringify({
+        version: 1,
+        phase: "applied",
+        failure: { kind: "fiber-failed", message: "boom" },
+        plugins: [
+          { name: "boom-plugin", kind: "patch", reason: { code: "load-failed" }, id: "boom-plugin", rowIds: ["boom-plugin"] },
+          { name: "another-off", kind: "patch", reason: { code: "crash" }, id: "another-off", rowIds: ["another-off"] }
+        ],
+        appliedAt: "2026-08-15T00:00:00.000Z",
+        boot: { pid: 1, startedAt: 1, healthy: true, healthyAt: 2 }
+      })
+    });
+    try {
+      const registered: Array<{ name: string; handler: (invocation: { rawInput: string }) => unknown }> = [];
+      const commands = { register: vi.fn((definition: { name: string; handler: (invocation: { rawInput: string }) => unknown }) => {
+        registered.push(definition);
+        return () => {};
+      }) };
+      const { ctx, disposers } = mockCtx({ commands, baseUrl: pathToFileURL(join(dir, "cordis.patch.yml")).href });
+      apply(ctx, {});
+      const result = await registered[0]!.handler({ rawInput: "apply boom-plugin" });
+      expect(result).toMatchObject({ kind: "success" });
+      const text = String((result as { text: string }).text);
+      expect(text).toContain("boom-plugin");
+      expect(text).toContain("其余 1 个保持禁用");
+      const patch = rescuePatchOf(dir);
+      expect(rowDisabled(patch, "boom-plugin")).toBe(false);
+      expect(rowDisabled(patch, "another-off")).toBe(true);
+      disposeAll(disposers);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null, isDesktop: null });
+    }
   });
 
 

@@ -335,18 +335,24 @@ export function startupProblems(
  * deep copy of the list, and append id-targeted disable rows for third-party
  * profile bundle layers. Per-plugin reasons follow the failure kind, falling
  * back to "load-failed" when a live fiber actually failed.
+ *
+ * `protectLayerNames` names bundle layers that must never be disabled: the
+ * host's own front door in headless/TUI deployments (auto-detected by the
+ * host), plus any bundle the deployment pinned via `rescue.protectBundles`.
  */
 export function buildRescuePlan(
   list: PatchRow[],
   bundleLayers: BundleLayerView[],
   ownName: string,
   live: Map<string, LiveEntryView>,
-  failure: RescueFailure
+  failure: RescueFailure,
+  protectLayerNames: Iterable<string> = []
 ): RescuePlan {
   const updatedList = structuredClone(list);
   const plugins: RescuePluginEntry[] = [];
   const seenNames = new Set<string>();
   const liveById = new Map<string, LiveEntryView>();
+  const protect = new Set(protectLayerNames);
   for (const entry of live.values()) liveById.set(entry.id, entry);
 
   for (const found of thirdPartyPatchEntries(updatedList, ownName)) {
@@ -373,10 +379,12 @@ export function buildRescuePlan(
   // Third-party profile bundles: target their loader row ids with disable
   // rows (the patch layer overrides bundle layers). Rows already present in
   // the patch (hand-written disables or an entry with the same id) are left
-  // alone — an existing target already handles the entry.
+  // alone — an existing target already handles the entry. Protected layers
+  // (the host's own front door) are skipped entirely: disabling them would
+  // kill the only surface the user can restore from.
   const existingIds = new Set(patchListIds(updatedList));
   for (const layer of bundleLayers) {
-    if (seenNames.has(layer.name) || !isThirdPartyPluginName(layer.name, ownName)) continue;
+    if (protect.has(layer.name) || seenNames.has(layer.name) || !isThirdPartyPluginName(layer.name, ownName)) continue;
     const added: string[] = [];
     for (const rowId of layer.rowIds) {
       if (existingIds.has(rowId)) continue;

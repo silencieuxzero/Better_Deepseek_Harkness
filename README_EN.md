@@ -134,6 +134,13 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
   - This plugin's own features (settings, terminals, git, MCP, vision, Tavily, file tree, ...) are unaffected by rescue mode
   - The Plugins tab also offers an "Enter rescue mode" button to trigger the same flow manually
 
+**Headless / TUI hosts (e.g. dsh-TUI)**
+
+- The plugin loads in terminal hosts whose composition has no `webServer` service, and every GUI-independent feature keeps working:
+  - The rescue-mode watchdog and restore flow are fully functional; the interaction surface is the **`/rescue` slash command** (dsh-TUI merges registry commands into its slash menu): `/rescue` shows status, `/rescue apply all|none|<names>` restores a selection, `/rescue trigger` enters rescue mode manually
+  - Rescue mode auto-protects the host's own front door (in hosts without a web layer, a third-party bundle that mounts itself as a loader row is never disabled — disabling it would kill the terminal UI with no way to restore); `rescue.protectBundles` appends an explicit protection list
+  - The settings namespace, custom skill directories, Tavily search, tool-argument repair and image transcription keep working; only the `/ext/api` HTTP routes and the Web surfaces are not mounted
+
 </details>
 
 ## Compatibility (dsh-web-ui)

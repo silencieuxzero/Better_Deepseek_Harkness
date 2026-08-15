@@ -10,6 +10,11 @@ For the Chinese version, see [CHANGELOG_ZH.md](CHANGELOG_ZH.md).
 
 ### Added
 
+- **dsh-TUI / headless-host support**: full support for terminal hosts whose composition has no `webServer` service (e.g. [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI)); every GUI-independent feature keeps working:
+  - `webServer` is now an optional service (static inject keeps only `tools`): the plugin loads in web-less hosts — rescue watchdog, settings namespace, custom skill directories, Tavily search, tool-argument repair and image transcription all work; only the `/ext/api` routes are not mounted;
+  - **`/rescue` slash command**: registered automatically when a `commands` registry is mounted (dsh-TUI merges registry commands into its slash menu) — `/rescue` (status), `/rescue apply all|none|<names>` (restore selection; empty = keep disabled), `/rescue trigger` (manual entry). Restoration runs through the exact same pure functions as the Web dialog;
+  - **front-door bundle auto-protection**: in hosts without `webServer`, a third-party bundle that mounts itself as a loader row (an insert entry whose `name` equals its own package name) is treated as the host UI itself and never disabled by rescue — otherwise rescue would kill the terminal UI with no dialog to restore from; explicit `rescue.protectBundles` appends to the protected list;
+  - Config: `rescue.protectBundles` (string array, default empty) on the `ext-center` row. `buildRescuePlan` in `src/rescue.ts` gained the `protectLayerNames` parameter, covered by new `tests/rescue.spec.ts` and `tests/host-wiring.spec.ts` cases.
 - **Rescue mode**: when DeepSeek Harness fails to start (plugin conflicts, an unbuilt third-party plugin, duplicate loader entry ids, or a boot that crashed before settling), the next boot automatically enters rescue mode:
   - every third-party plugin except this one is disabled by default (patch rows get `disabled: true`; third-party profile bundles get id-targeted disable rows) and the harness keeps running with the minimal configuration — no manual patch editing;
   - once the boot succeeds, a dialog lists every disabled plugin (name + disable reason, including the loader's own failure text when available) with multi-select re-enable, plus "Restore all" / "Keep disabled" quick actions;

@@ -247,6 +247,27 @@ describe("buildRescuePlan", () => {
     expect(plan.plugins).toEqual([]);
     expect(plan.updatedList).toEqual(list);
   });
+
+  it("never disables a protected bundle layer (the headless host's front door)", () => {
+    // dsh-TUI-style deployment: the front-door bundle mounts itself as a row
+    // and rescue must not disable it — that would kill the only surface the
+    // user can restore from.
+    const layers: BundleLayerView[] = [
+      { name: "@deepseek-harness-tui/dsh-tui", rowIds: ["dsh-tui", "agent-loop", "system-prompt", "working-activity"] },
+      { name: "@dsh-external/addon", rowIds: ["addon-row"] }
+    ];
+    const plan = buildRescuePlan(fixturePatch(), layers, "better-deepseek-harness", new Map(), CRASH, ["@deepseek-harness-tui/dsh-tui"]);
+    const rows = plan.updatedList.filter((row) => !Array.isArray(row.insert));
+    // the protected front door gets no disable rows at all
+    for (const id of ["dsh-tui", "agent-loop", "system-prompt", "working-activity"]) {
+      expect(rows.some((row) => row.id === id)).toBe(false);
+    }
+    // the unprotected add-on bundle is still disabled
+    expect(rows.some((row) => row.id === "addon-row" && row.disabled === true)).toBe(true);
+    const names = plan.plugins.map((plugin) => plugin.name);
+    expect(names).not.toContain("@deepseek-harness-tui/dsh-tui");
+    expect(names).toContain("@dsh-external/addon");
+  });
 });
 
 describe("buildRestorePlan", () => {
