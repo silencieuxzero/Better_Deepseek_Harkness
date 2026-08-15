@@ -34,6 +34,8 @@ interface MockOptions {
   sessions?: { get: (id: string) => unknown } | undefined;
   /** when true, ctx.get("webServer") reports the service as absent (headless/TUI host). */
   noWebServer?: boolean;
+  /** when set, ctx.get("webServer") returns this value (late-arrival / replacement scenarios). */
+  webServerAt?: unknown;
   /** value returned for ctx.get("commands") (defaults to undefined — no command registry). */
   commands?: { register: ReturnType<typeof vi.fn> };
   /** value returned for ctx.get("agents") (defaults to undefined — no agent registry). */
@@ -61,6 +63,7 @@ function mockCtx(options: MockOptions = {}) {
     routes: Array<{ path: string; handler: (req: unknown, res: unknown) => Promise<void> }>;
     events: string[];
   } = { routes: [], events: [] };
+  const onHandlers: Record<string, Array<(name: string, value?: unknown) => void>> = {};
   const settings = {
     register: vi.fn(() => ({
       get: () => options.stored ?? {},
@@ -100,7 +103,7 @@ function mockCtx(options: MockOptions = {}) {
       if (name === "workspaceRegistry") return options.workspaceRegistry;
       if (name === "sessionPersistence") return options.sessionPersistence;
       if (name === "sessions") return options.sessions;
-      if (name === "webServer") return options.noWebServer ? undefined : webServer;
+      if (name === "webServer") return options.webServerAt !== undefined ? options.webServerAt : (options.noWebServer ? undefined : webServer);
       if (name === "commands") return options.commands;
       if (name === "agents") return options.agents;
       return undefined;
@@ -120,8 +123,9 @@ function mockCtx(options: MockOptions = {}) {
       if (typeof dispose === "function") disposers.push(dispose as () => void);
       return dispose;
     }),
-    on: vi.fn((event: string) => {
+    on: vi.fn((event: string, handler?: (name: string, value?: unknown) => void) => {
       registrations.events.push(event);
+      if (typeof handler === "function") (onHandlers[event] ??= []).push(handler);
       return () => {};
     }),
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -131,7 +135,7 @@ function mockCtx(options: MockOptions = {}) {
     },
     webServer
   };
-  return { ctx, settings, skills, disposers, registrations, pendingInject };
+  return { ctx, settings, skills, disposers, registrations, pendingInject, onHandlers };
 }
 
 /** A temp profile directory fixture for rescue-mode wiring tests. */
@@ -273,6 +277,41 @@ describe("apply() wiring", () => {
     expect(settings.register).toHaveBeenCalledWith(SETTINGS_NS, expect.anything(), expect.anything());
     expect(skills.registerProvider).toHaveBeenCalledTimes(1);
     expect(registrations.events).toContain("tools/execute");
+  });
+
+  it("mounts the API routes when the webServer service arrives after apply (boot race)", () => {
+    // include-loaded entries race the web-app composition at boot: the
+    // service may not be active yet when apply() runs, and a one-shot
+    // ctx.get() would silently lose the routes forever. The route watcher
+    // must pick the service up when cordis re-emits internal/service.
+    const options: MockOptions = { noWebServer: true };
+    const { ctx, registrations, onHandlers } = mockCtx(options);
+    expect(() => apply(ctx, {})).not.toThrow();
+    expect(registrations.routes).toHaveLength(0);
+    expect(ctx.webServer.register).not.toHaveBeenCalled();
+    // the webServer fiber activates after this plugin: cordis re-emits the
+    // service event, and the routes then mount (repeated events stay idempotent).
+    options.webServerAt = ctx.webServer;
+    for (const handler of onHandlers["internal/service"] ?? []) handler("webServer");
+    for (const handler of onHandlers["internal/service"] ?? []) handler("webServer");
+    expect(ctx.webServer.register).toHaveBeenCalledTimes(1);
+    expect(registrations.routes[0]?.path).toBe("/ext/api");
+    expect(typeof registrations.routes[0]?.handler).toBe("function");
+  });
+
+  it("re-mounts the API routes when the webServer service instance is replaced", () => {
+    // a webServer hot-reload swaps the service instance; the watcher must
+    // register the routes on the new instance without touching the old one.
+    const options: MockOptions = {};
+    const { ctx, onHandlers } = mockCtx(options);
+    expect(() => apply(ctx, {})).not.toThrow();
+    expect(ctx.webServer.register).toHaveBeenCalledTimes(1);
+    const second = { register: vi.fn(() => () => {}) };
+    options.webServerAt = second;
+    for (const handler of onHandlers["internal/service"] ?? []) handler("webServer");
+    expect(second.register).toHaveBeenCalledTimes(1);
+    expect(ctx.webServer.register).toHaveBeenCalledTimes(1);
+    expect((second.register as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.path).toBe("/ext/api");
   });
 
   it("registers the /rescue command when the command registry is mounted", () => {

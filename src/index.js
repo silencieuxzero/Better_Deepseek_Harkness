@@ -254,6 +254,8 @@ const BODY_LIMIT = 2 * 1024 * 1024; // 2 MiB
 const MAX_TREE_FILE_SIZE = 1024 * 1024;
 /** Single write payload cap for terminal input (security invariant). */
 const TERMINAL_WRITE_LIMIT = 4096;
+/** Boot window during which the /ext/api routes wait for a late webServer service before the headless-host note is logged. */
+const API_ROUTE_WAIT_MS = 30_000;
 /** Ceiling on one batch of git paths from the client (security invariant). */
 const GIT_PATHS_MAX = 500;
 /** Ceiling on one batch of archived-session deletions (security invariant). */
@@ -4022,15 +4024,43 @@ function apply(ctx, config = {}) {
   // hosts (e.g. dsh-TUI) have no web layer — every host-side feature (rescue
   // watchdog, settings, skills, Tavily, tool repair, image transcription)
   // keeps working there, and the /rescue command becomes the interaction
-  // surface instead of the Web dialog.
-  let webServer;
-  try { webServer = ctx.get("webServer"); } catch { /* not mounted */ }
-  if (webServer && typeof webServer.register === "function") {
-    ctx.effect(() => webServer.register({ kind: "prefix", path: "/ext/api", handler: handle }), "better-deepseek-harness: api routes");
+  // surface instead of the Web dialog. The /ext/api routes can therefore
+  // neither ride a static inject (a missing webServer would park this fiber
+  // in pending forever on a headless host) nor a one-shot ctx.get(): the
+  // web-app composition provides webServer concurrently with this apply(), so
+  // the service may simply not be active yet when this fiber runs. Mount
+  // eagerly when it already is, otherwise wait on the service event (cordis
+  // re-emits `internal/service` on activation and on replacement, so a
+  // webServer hot-reload re-mounts the routes too).
+  let mountedOn = null;
+  const mountApi = (server) => {
+    if (mountedOn === server) return;
+    mountedOn = server;
+    ctx.effect(() => server.register({ kind: "prefix", path: "/ext/api", handler: handle }), "better-deepseek-harness: api routes");
     ctx.logger?.info?.("better-deepseek-harness: API mounted at /ext/api (profile %s)", layout.profileDir);
-  } else {
-    ctx.logger?.info?.("better-deepseek-harness: API not mounted — no webServer service in this host (headless/TUI deployment); host-side features stay active");
+  };
+  const mountApiWhenReady = () => {
+    let server;
+    try { server = ctx.get("webServer"); } catch { /* not mounted */ }
+    if (server && typeof server.register === "function") mountApi(server);
+  };
+  mountApiWhenReady();
+  try {
+    ctx.on("internal/service", (name) => {
+      if (name !== "webServer") return;
+      mountApiWhenReady();
+    });
+  } catch (error) {
+    ctx.logger?.warn?.("better-deepseek-harness: API route watcher registration failed: %s", error?.message ?? error);
   }
+  // After the boot window a still-unmounted API means a genuinely headless
+  // host — say so once (the watcher stays dormant, released with the fiber).
+  const apiMountNote = setTimeout(() => {
+    if (mountedOn === null) {
+      ctx.logger?.info?.("better-deepseek-harness: API not mounted — no webServer service in this host (headless/TUI deployment); host-side features stay active");
+    }
+  }, API_ROUTE_WAIT_MS);
+  ctx.effect(() => () => clearTimeout(apiMountNote), "better-deepseek-harness: api route wait note");
 
   // 4. terminal lifecycle: kill every pty child when the plugin is disposed
   ctx.effect(() => {

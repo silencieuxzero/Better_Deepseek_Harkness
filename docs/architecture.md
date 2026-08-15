@@ -101,7 +101,7 @@ DeepSeek Harness 的启动审计（`assertEntriesActivated`）把任何第三方
 
 ## 无头 / TUI 宿主适配（headless & TUI hosts）
 
-[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 一类的终端宿主用 `dsh-base` 组合自建宿主进程，**不挂载 `webServer` 服务**。本插件的静态注入只声明必需的 `tools`，`webServer` 全部走 `ctx.get()` 守卫——因此在这样的宿主里插件照常加载，不依赖 GUI 的功能原样工作：
+[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 一类的终端宿主用 `dsh-base` 组合自建宿主进程，**不挂载 `webServer` 服务**。本插件的静态注入只声明必需的 `tools`，`webServer` 是可选项：apply 时服务已就绪就立即挂载 `/ext/api` 前缀路由；尚未就绪（include 加载的条目与 web-app 组合并发启动，服务晚于本 fiber 激活）则监听 `internal/service` 事件，服务激活或替换（webServer 热重载）时补挂——因此路由挂载不吃启动顺序的竞态，真无头宿主里监听器随 fiber 释放、不产生 pending fiber，只在 30s 启动窗口后记一条「API not mounted」日志。其余不依赖 GUI 的功能原样工作：
 
 - **急救模式**：看门狗、`.dsh-rescue.json` 侧车、补丁写入与 settle 判定全部是宿主侧逻辑，无 web 依赖；恢复交互改走 **`/rescue` 斜杠命令**（挂载 dsh-commands 注册表时自动注册，dsh-TUI 会把注册表命令并入其斜杠菜单并分发）：`/rescue`（状态）、`/rescue apply all|none|<插件名,...>`（恢复选择，空选择 = 保持禁用）、`/rescue trigger`（手动进入）。命令输出即状态视图的文本渲染，恢复走与 `/ext/api/rescue/apply` 完全相同的 `resolveRescue` 路径（含事务性补丁写入与按宿主形态重载：桌面刷新页面 / 命令行宿主重启进程）。
 - **前门保护**：见「急救模式 → 前门 bundle 保护」。
