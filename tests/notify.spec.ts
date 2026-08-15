@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  NOTIFY_AUMID,
   NOTIFY_BODY_CAP,
   NOTIFY_DEFAULTS,
   NOTIFY_ERROR_CAP,
@@ -123,10 +124,19 @@ describe("buildToastScript", () => {
     expect(script).toContain("CreateTextNode('正文 it''s fine')");
   });
 
-  it("uses the WinRT ToastText02 template and the no-arg notifier", () => {
+  it("registers the notifier AUMID idempotently through a Start Menu shortcut", () => {
+    const script = buildToastScript("t", "b");
+    expect(script).toContain(`$Aumid = '${NOTIFY_AUMID}'`);
+    expect(script).toContain("Start Menu\\Programs\\DeepSeek Harness Notifier.lnk");
+    expect(script).toContain("if (-not (Test-Path $ShortcutPath))");
+    expect(script).toContain("ShortcutRegistrar");
+    expect(script).toContain("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+  });
+
+  it("shows the toast through the registered AUMID notifier", () => {
     const script = buildToastScript("t", "b");
     expect(script).toContain("ToastText02");
-    expect(script).toContain("CreateToastNotifier().Show($toast)");
+    expect(script).toContain("CreateToastNotifier($Aumid).Show($toast)");
     expect(script).toContain("$ErrorActionPreference = 'Stop'");
   });
 
