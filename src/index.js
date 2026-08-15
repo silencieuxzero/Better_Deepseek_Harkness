@@ -1903,6 +1903,58 @@ function registerVisionListener(ctx, configOf, cfg) {
   ctx.logger?.info?.("better-deepseek-harness: llm/stream image-transcription wrapper registered");
 }
 
+/* ─────────────────────────── vision capability bridge ─────────────────────────── */
+
+/**
+ * The host api-gateway (dsh-host-apiproxy) rejects a prompt — or a model
+ * switch into a session that already carries images — when the selected
+ * model's `inputModalities` lack "image". That check runs BEFORE the
+ * llm/stream waterfall, so the transcription wrapper above never sees the
+ * request and image transcription stays dead even when configured.
+ *
+ * Bridge: when `ext-center.vision.enabled` is on, advertise image input on
+ * the resolved model info so the request reaches the waterfall, which
+ * rewrites image blocks to text before the text-only adapter reads them.
+ * When the switch is off the model info passes through untouched and the
+ * original rejection behavior is preserved. The wrapper is installed on
+ * the llm service (restored on dispose) and only ever adds the "image"
+ * modality — it never removes one.
+ */
+function registerVisionCapabilityBridge(ctx, configOf, cfg) {
+  try {
+    ctx.effect(() => {
+      let llm;
+      try {
+        llm = ctx.get("llm");
+      } catch { /* the llm service is optional in this deployment */ }
+      if (!llm || typeof llm.resolveModelInfo !== "function") return;
+      const original = llm.resolveModelInfo;
+      const patched = async function (provider, model, signal) {
+        const info = await original.call(this, provider, model, signal);
+        let vision;
+        try {
+          vision = visionConfigOf(configOf(), cfg);
+        } catch { /* unreadable settings — keep the model info untouched */ }
+        if (
+          vision?.enabled &&
+          info && typeof info === "object" &&
+          Array.isArray(info.inputModalities) &&
+          !info.inputModalities.includes("image")
+        ) {
+          return { ...info, inputModalities: [...info.inputModalities, "image"] };
+        }
+        return info;
+      };
+      llm.resolveModelInfo = patched;
+      return () => {
+        if (llm.resolveModelInfo === patched) llm.resolveModelInfo = original;
+      };
+    }, "better-deepseek-harness: vision capability bridge");
+  } catch (error) {
+    ctx.logger?.warn?.("better-deepseek-harness: vision capability bridge registration failed: %s", error?.message ?? error);
+  }
+}
+
 /* ─────────────────────────── input optimization ─────────────────────────── */
 
 /** System instruction for the one-shot input optimizer. */
@@ -2012,6 +2064,10 @@ function apply(ctx, config = {}) {
   // 0b. image transcription: requests carrying images are described by the
   //     configured vision model before a text-only adapter ever sees them.
   registerVisionListener(ctx, configOf, cfg);
+
+  // 0c. vision capability bridge: let image-bearing requests past the host
+  //     api-gateway's modality check so 0b actually runs (see the function).
+  registerVisionCapabilityBridge(ctx, configOf, cfg);
 
   // 1. settings namespace (native preferences). The registration rides a
   //    scoped fiber that waits for the settings service (the same pattern as

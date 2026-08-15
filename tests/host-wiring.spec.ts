@@ -12,7 +12,10 @@ interface MockOptions {
   /** settings.get() result — the stored ext-center section. */
   stored?: Record<string, unknown>;
   /** value returned for ctx.get("llm") (defaults to undefined). */
-  llm?: { stream: (options: unknown) => AsyncIterable<unknown> } | undefined;
+  llm?: {
+    stream: (options: unknown) => AsyncIterable<unknown>;
+    resolveModelInfo?: (provider: string, model: string, signal?: unknown) => Promise<{ inputModalities?: string[] }>;
+  } | undefined;
   /** value returned for ctx.get("attachments") (defaults to undefined). */
   attachments?: { readImage: (ref: unknown, signal?: unknown) => Promise<{ ref: { mediaType: string }, data: Uint8Array }> } | undefined;
   /** value returned for ctx.get("workspaceRegistry") (defaults to undefined). */
@@ -285,6 +288,80 @@ describe("llm/stream image transcription wrapper", () => {
     );
     expect(next).toHaveBeenCalledTimes(1);
     expect(result).toBe(downstream);
+  });
+});
+
+describe("vision capability bridge", () => {
+  /** The patched llm.resolveModelInfo installed by apply() when llm is mounted. */
+  function bridgeOf(options: MockOptions = {}) {
+    const { ctx, disposers } = mockCtx(options);
+    const llm = options.llm;
+    if (!llm || typeof llm.resolveModelInfo !== "function") throw new Error("test requires llm.resolveModelInfo");
+    // Capture the original before apply() swaps in the bridge wrapper.
+    const original = llm.resolveModelInfo;
+    apply(ctx, {});
+    return { llm, disposers, original };
+  }
+
+  it("advertises image input when transcription is enabled", async () => {
+    const { llm } = bridgeOf({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: {
+        stream: vi.fn(),
+        resolveModelInfo: vi.fn(async () => ({ inputModalities: ["text"] }))
+      }
+    });
+    const info = await (llm.resolveModelInfo as ReturnType<typeof vi.fn>)("deepseek", "deepseek-v4-flash");
+    expect(info).toEqual({ inputModalities: ["text", "image"] });
+  });
+
+  it("keeps the model info untouched when transcription is disabled", async () => {
+    const { llm } = bridgeOf({
+      // stored = {} -> vision disabled
+      llm: {
+        stream: vi.fn(),
+        resolveModelInfo: vi.fn(async () => ({ inputModalities: ["text"] }))
+      }
+    });
+    const info = await (llm.resolveModelInfo as ReturnType<typeof vi.fn>)("deepseek", "deepseek-v4-flash");
+    expect(info).toEqual({ inputModalities: ["text"] });
+  });
+
+  it("does not duplicate image when the model already supports it", async () => {
+    const { llm } = bridgeOf({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: {
+        stream: vi.fn(),
+        resolveModelInfo: vi.fn(async () => ({ inputModalities: ["image", "text"] }))
+      }
+    });
+    const info = await (llm.resolveModelInfo as ReturnType<typeof vi.fn>)("vp", "vm");
+    expect(info).toEqual({ inputModalities: ["image", "text"] });
+  });
+
+  it("leaves absent inputModalities untouched (api-gateway admits those)", async () => {
+    const { llm } = bridgeOf({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: {
+        stream: vi.fn(),
+        resolveModelInfo: vi.fn(async () => ({}))
+      }
+    });
+    const info = await (llm.resolveModelInfo as ReturnType<typeof vi.fn>)("vp", "vm");
+    expect(info).toEqual({});
+  });
+
+  it("restores the original resolveModelInfo when the plugin disposes", async () => {
+    const { llm, disposers, original } = bridgeOf({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: {
+        stream: vi.fn(),
+        resolveModelInfo: vi.fn(async () => ({ inputModalities: ["text"] }))
+      }
+    });
+    expect(llm.resolveModelInfo).not.toBe(original);
+    for (const dispose of disposers) dispose();
+    expect(llm.resolveModelInfo).toBe(original);
   });
 });
 
