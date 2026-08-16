@@ -3,3 +3,4 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 *.log
+lib/

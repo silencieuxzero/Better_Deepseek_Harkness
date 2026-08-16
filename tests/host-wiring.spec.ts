@@ -8,7 +8,7 @@ import { apply, inject, NAME, SETTINGS_NS, materializePackage, packageEntryPoint
 /**
  * A minimal cordis ctx double for apply(). `baseUrl` must be a real file URL
  * because resolveLayout() derives the profile directory from it; nothing is
- * written during apply(), so pointing it at lib/index.js is safe.
+ * written during apply(), so pointing it at the generated lib/index.js is safe.
  */
 interface MockOptions {
   /** settings.get() result — the stored ext-center section. */

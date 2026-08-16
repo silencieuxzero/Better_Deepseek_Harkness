@@ -1,6 +1,7 @@
 // Dry-run of the rescue plan against the REAL web profile (read-only).
 // Verifies: ext-center row untouched, third-party patch rows disabled,
 // third-party bundle rows targeted, core bundles skipped.
+// Requires `npm run build` first — it imports from the generated lib/.
 import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";

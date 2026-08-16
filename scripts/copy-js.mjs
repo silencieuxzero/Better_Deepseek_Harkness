@@ -1,6 +1,6 @@
 // Copy the hand-maintained JS sources to lib/ byte-identically. tsc reprints
 // JS with its own formatting, so JS ships as exact copies while only the
-// TypeScript sources are compiled. This keeps the committed lib/ diff minimal
+// TypeScript sources are compiled. This keeps the generated lib/ diff minimal
 // and guarantees the shipped runtime equals the reviewed src/.
 import { cpSync, mkdirSync } from "node:fs";
 

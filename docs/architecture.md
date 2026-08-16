@@ -73,7 +73,7 @@
 - **`.dsh-ext-center.json`** 是 profile 目录下的侧车状态文件：记录包来源与补丁行，卸载/停用时据此精确移除对应行。
 - **`.dsh-rescue.json`** 是急救模式的侧车状态文件（profile 目录下）：记录启动标记（pid / startedAt / healthy）、急救是否已生效（`phase: "applied"`）、触发原因与每个被禁用插件的名称与原因。每次启动写一个未定稿的 boot 记录，启动窗口（`rescue.settleMs`，默认 12s）过后无异常才标记 healthy；上一启动未定稿 = 启动失败，下一次启动据此进入急救模式。
 - 插件安装 = 包落到共享模块根 `~/.dsh/profiles/node_modules` → 合并其 bundle 补丁行（无补丁的包自动补 `{id, name}` 行）→ HMR 配置监听器事务性重放，条目即时挂载。
-- **Git 源构建回退**：`materializePackage` 对 git 源克隆后检查包声明的入口（`main` / `exports["."]`，见 `packageEntryPoints`）；入口缺失（仓库未提交构建产物，如 `lib/` 不存在）时自动执行 `npm install --no-audit --no-fund` 与 `npm run build`（`ensureBuiltPackage`，单步超时 10 分钟、输出只保留尾部 16 KiB，spawn 失败报 `build-tool-missing`，其余报 `build-failed` 并带输出尾部）。`npm install` 本身也会跑 `prepare` 钩子，所以只靠 `prepare` 出产物的仓库同样能恢复。构建成功与否经安装响应 `builtFromSource` 透出给客户端。npm / URL / folder 源不触发构建（发布产物理应已构建；folder 是用户本地目录，构建与否由用户负责）。
+- **Git 源构建回退**：`materializePackage` 对 git 源克隆后检查包声明的入口（`main` / `exports["."]`，见 `packageEntryPoints`）；入口缺失（仓库未提交构建产物，如 `lib/` 不存在）时自动执行 `npm install --no-audit --no-fund` 与 `npm run build`（`ensureBuiltPackage`，单步超时 10 分钟、输出只保留尾部 16 KiB，spawn 失败报 `build-tool-missing`，其余报 `build-failed` 并带输出尾部）。`npm install` 本身也会跑 `prepare` 钩子，所以只靠 `prepare` 出产物的仓库同样能恢复。构建成功与否经安装响应 `builtFromSource` 透出给客户端。npm / URL / folder 源不触发构建（发布产物理应已构建；folder 是用户本地目录，构建与否由用户负责）。本仓库自身也不再提交 `lib/`，从 Git 源安装时会走同一构建回退。
 - **归档删除**：`/ext/api/archive/delete` 跳过仍加载/运行中的会话，删除其余已归档会话日志（经 `sessionPersistence.locate` 定位到会话目录后移除），并尽力从工作区记账中 detach；Harness 当前公开面没有 unarchive/delete session RPC，因此该操作是永久删除。
 
 ## 急救模式（rescue mode）

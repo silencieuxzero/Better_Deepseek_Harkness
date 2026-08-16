@@ -2,7 +2,7 @@
 
 > 欢迎为 better-deepseek-harness 贡献代码、文档或 issue。本文件是软件开发与贡献的入口——**实现态的技术细节**（架构、目录结构、构建/测试流程）都在这里，README 只保留面向最终用户的安装与使用说明。
 
-本仓库是独立的 DeepSeek Harness 插件仓库（不是 Harness monorepo 的一部分）：宿主侧 + 浏览器侧 + 纯逻辑三个模块，构建产物提交进 git。**改动代码前请先阅读**：
+本仓库是独立的 DeepSeek Harness 插件仓库（不是 Harness monorepo 的一部分）：宿主侧 + 浏览器侧 + 纯逻辑三个模块，构建产物（`lib/`）生成但不提交进 git。**改动代码前请先阅读**：
 
 - [docs/architecture.md](docs/architecture.md) —— 架构契约：扩展点（能力接缝）、路由表设计、持久化一致性、安全不变量、模块职责。改代码前必须读。
 - [docs/development.md](docs/development.md) —— 开发流程：命令、测试策略、编码约定、TypeScript 渐进式迁移、发布与安装。
@@ -22,9 +22,9 @@
 前置：Node.js 22.19+（与 Harness 运行时一致），npm 即可（不需要 pnpm）。
 
 ```sh
-npm install          # 安装依赖（vitest、typescript 及运行时依赖）
+npm install          # 安装依赖（vitest、typescript 及运行时依赖），并触发 prepare 自动构建 lib/
 npm run typecheck    # tsc --noEmit（strict；覆盖 src 与 tests）
-npm test             # vitest 单测
+npm test             # pretest 自动构建后运行 vitest 单测
 npm run build        # tsc 发射 src/* → lib/*（产物与源码同名）
 npm run check        # typecheck + test
 ```
@@ -49,7 +49,7 @@ npm run check        # typecheck + test
 better-deepseek-harness/
 ├── package.json          # 入口、dsh.bundle.patch + dsh.client 声明、scripts（build/test/typecheck）
 ├── cordis.patch.yml      # bundle 补丁：插入 ext-center 行
-├── install.ps1           # 一键安装脚本（方式一，跳过 .git 与 node_modules）
+├── install.ps1           # 一键安装脚本（方式一，复制后自动 npm ci + 构建 lib/，跳过 .git 与 node_modules）
 ├── tsconfig.json         # 类型检查（strict，noEmit）
 ├── tsconfig.build.json   # 构建：tsc 发射 src/*.ts → lib/，JS 由 copy-js.mjs 原样复制
 ├── scripts/copy-js.mjs   # 构建时把 index.js / client.js 逐字节复制到 lib/
@@ -64,7 +64,7 @@ better-deepseek-harness/
 │   └── tavily.ts         # Tavily 搜索纯函数：默认值 / 校验 / 请求 / 映射 / 格式化（构建后为 lib/tavily.js）
 ├── tests/                # vitest 规格（tool-args / ansi / terminal-buffer / tavily / host-wiring / built-smoke）
 ├── docs/                 # docs/architecture.md（架构）、docs/development.md（开发指南）
-├── lib/                  # 构建产物（npm run build 生成并提交进 git —— 安装方无需任何构建工具）
+├── lib/                  # 构建产物（npm run build 生成；不提交进 git，安装/测试时自动构建）
 └── CONTRIBUTING.md
 ```
 
@@ -144,8 +144,8 @@ better-deepseek-harness/
 
 ## 开发
 
-- `npm run typecheck`（strict 类型检查）、`npm test`（vitest）、`npm run build`（tsc 发射 `src/` → `lib/`）、`npm run check`（typecheck + test）——完整流程与构建细节见 docs/development.md。
-- `lib/` 是提交进 git 的构建产物：改完 `src/` 后必须 `npm run build` 并提交新的 `lib/`，否则安装方拿不到改动（安装流程不执行构建）。
+- `npm run typecheck`（strict 类型检查）、`npm test`（vitest，`pretest` 自动构建）、`npm run build`（tsc 发射 `src/` → `lib/`）、`npm run check`（typecheck + test）——完整流程与构建细节见 docs/development.md。
+- `lib/` 是生成产物、不提交进 git：改完 `src/` 后本地执行 `npm run build`（或 `npm test` / `npm install` 自动构建）验证；安装流程会在目标目录构建，不再依赖提交的 `lib/`。
 
 ## 测试
 
@@ -153,7 +153,7 @@ better-deepseek-harness/
 - `tests/ansi.spec.ts`：终端 ANSI 剥离（CSI/OSC、跨 chunk 的未完成序列）的行为规格。
 - `tests/host-wiring.spec.ts`：用最小 ctx 双（mock）跑 `apply()`，断言接线（路由、设置命名空间、技能 provider、两个瀑布）与路由调度器（200/403/404/405、错误信封）；不触真实文件系统与网络。
 - `tests/terminal-buffer.spec.ts`：终端输出字节环（截断后 offset 语义、UTF-8 边界对齐）的行为规格。
-- `tests/built-smoke.spec.ts`：构建产物契约——`lib/` 的 JS 与 `src/` 逐字节一致，且 `lib/` 入口能在纯 Node ESM 下加载运行。
+- `tests/built-smoke.spec.ts`：构建产物契约——`npm test` 的 `pretest` 先生成 `lib/`，再断言 `lib/` 的 JS 与 `src/` 逐字节一致，且 `lib/` 入口能在纯 Node ESM 下加载运行。
 
 新增行为先写测试再实现；纯函数进 `tool-args.ts`（或新的纯模块），有 I/O 的逻辑通过 ctx 双在 `host-wiring.spec.ts` 中覆盖。
 
@@ -170,6 +170,6 @@ better-deepseek-harness/
 ## 提交与发布
 
 - 文档随代码走：行为变化同步更新 README 与 docs/architecture.md。
-- 发布前跑 `npm run check`；改动 `src/` 后必须重新 `npm run build` 并提交 `lib/`。
-- npm 发布按 `files` 白名单打包（lib、src、tests、docs、cordis.patch.yml、README.md、CONTRIBUTING.md）；安装方不需要任何构建工具。
+- 发布前跑 `npm run check`；改动 `src/` 后重新 `npm run build` 验证，`lib/` 不需要提交（`prepare` 会在安装/打包时自动生成）。
+- npm 发布按 `files` 白名单打包（lib、src、tests、docs、cordis.patch.yml、README.md、CONTRIBUTING.md）；`prepare` 会在打包前生成 `lib/`，因此从 npm tarball 安装不需要构建工具；从 Git / `install.ps1` 安装会在目标目录构建。
 - 安装与发布细节见 docs/development.md「发布与安装」。

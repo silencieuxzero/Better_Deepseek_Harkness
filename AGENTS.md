@@ -1,6 +1,6 @@
 # AGENTS.md
 
-better-deepseek-harness 是一个独立的 DeepSeek Harness 插件仓库（不是 Harness monorepo 的一部分）：宿主侧 + 浏览器侧 + 纯逻辑三个模块，构建产物提交进 git。改动代码前读 [docs/architecture.md](docs/architecture.md)；开发流程与目录约定见 [docs/development.md](docs/development.md)。
+better-deepseek-harness 是一个独立的 DeepSeek Harness 插件仓库（不是 Harness monorepo 的一部分）：宿主侧 + 浏览器侧 + 纯逻辑三个模块。改动代码前读 [docs/architecture.md](docs/architecture.md)；开发流程与目录约定见 [docs/development.md](docs/development.md)。
 
 ## 仓库布局
 
@@ -8,23 +8,23 @@ better-deepseek-harness 是一个独立的 DeepSeek Harness 插件仓库（不�
 src/       源码：index.js（宿主侧）、client.js（浏览器侧）、tool-args.ts / ansi.ts / tavily.ts / terminal-buffer.ts / rescue.ts（纯逻辑 TS）
 tests/     vitest 规格（*.spec.ts）
 docs/      架构与开发文档
-lib/       构建产物（npm run build 生成；提交进 git，安装免构建）
+lib/       构建产物（npm run build 生成；不提交进 git，安装/测试时自动构建）
 cordis.patch.yml   bundle 补丁（插入 ext-center 行）
-install.ps1        一键安装脚本
-package.json       main/exports 指向 lib/；dsh.bundle.patch + dsh.client 声明
+install.ps1        一键安装脚本（复制后自动 npm ci + 构建 lib/）
+package.json       main/exports 指向 lib/；dsh.bundle.patch + dsh.client 声明；prepare 自动构建
 ```
 
 ## 命令
 
 ```sh
-npm install          # 安装依赖
+npm install          # 安装依赖并触发 prepare（自动构建 lib/）
 npm run typecheck    # tsc --noEmit（strict；覆盖 src 与 tests）
-npm test             # vitest 单测
+npm test             # pretest 自动构建后运行 vitest 单测
 npm run build        # tsc 发射 src/ → lib/
 npm run check        # typecheck + test
 ```
 
-改完 `src/` 必须 `npm run build` 并提交新的 `lib/`（安装流程不执行构建）。
+`lib/` 是生成产物、不提交进 git。改完 `src/` 后本地 `npm run build`（或 `npm test` / `npm install` 自动构建）验证；安装流程会在目标目录构建，不再依赖提交的 `lib/`。
 
 ## 约定
 

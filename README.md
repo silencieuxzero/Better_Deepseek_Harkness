@@ -190,7 +190,7 @@
 
 ## 安装
 
-### 方式一：Git 安装（推荐，需要 git，无需 pnpm / npm）
+### 方式一：Git 安装（推荐，需要 git 与 npm）
 
 克隆本仓库，然后运行仓库内的一键安装脚本：
 
@@ -200,14 +200,17 @@ cd Better_Deepseek_Harness
 .\install.ps1                # 默认装入 web profile；其它 profile：.\install.ps1 -Profile agents
 ```
 
-脚本会把本包复制到共享模块根 `~/.dsh/profiles/node_modules/better-deepseek-harness`，并在 profile 的 `cordis.patch.yml` 追加 `ext-center` 行（按 id 去重）。配置监听器会在几秒内热生效：主机侧 API 立即可用，浏览器刷新页面后「设置 → 更好的 DeepSeek Harness」出现。
+脚本会把本包复制到共享模块根 `~/.dsh/profiles/node_modules/better-deepseek-harness`，自动执行 `npm ci` 并生成 `lib/`（`lib/` 不再提交进 git），然后在 profile 的 `cordis.patch.yml` 追加 `ext-center` 行（按 id 去重）。配置监听器会在几秒内热生效：主机侧 API 立即可用，浏览器刷新页面后「设置 → 更好的 DeepSeek Harness」出现。
 
-### 方式二：手动安装（无需 git / pnpm / npm）
+### 方式二：手动安装（需要 git 与 npm）
 
 把 `better-deepseek-harness` 整个目录复制到共享模块根（git clone 下来的目录名是 `Better_Deepseek_Harness`，按实际目录名复制即可）：
 
 ```powershell
 Copy-Item -Recurse Better_Deepseek_Harness "$HOME\.dsh\profiles\node_modules\better-deepseek-harness"
+cd "$HOME\.dsh\profiles\node_modules\better-deepseek-harness"
+npm ci
+npm run build
 ```
 
 然后在 profile 的 `cordis.patch.yml`（例如 `~/.dsh/profiles/web/cordis.patch.yml`）追加：
@@ -234,7 +237,7 @@ dsh plugin --profile web add file:/path/to/better-deepseek-harness
 dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepseek_Harness.git
 ```
 
-本包在 package.json 的 `dsh.bundle.patch` 中声明的补丁文件（`cordis.patch.yml`）会插入同名（`ext-center`）行，与方式一、方式二按 id 去重、不冲突。
+本包在 package.json 的 `dsh.bundle.patch` 中声明的补丁文件（`cordis.patch.yml`）会插入同名（`ext-center`）行，与方式一、方式二按 id 去重、不冲突。由于 `lib/` 不再提交，安装过程中会通过 `prepare` 钩子自动构建。
 
 ## 部署配置（ext-center 行的 config 块）
 

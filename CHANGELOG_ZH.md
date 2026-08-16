@@ -37,6 +37,10 @@
   - `@linxin666/dsh-tool-describe-image` 生效时，宿主侧图片转述与视觉能力桥保持惰性（该场景下图像理解由 describe-image 负责）；
   - 检测按加载器条目 id 或包名匹配，且只统计 ACTIVE 且未禁用的 fiber——全家桶插件处于 pending / 失败时本插件保留自己的界面；宿主侧在加载器树收敛后会复查一次。纯逻辑在 `src/compat.ts`（家族注册表、检测、抑制映射），`src/client.js` 内联同表，由 `tests/compat.spec.ts`、`tests/compat-client.spec.ts` 与新增的 `tests/host-wiring.spec.ts` 用例覆盖。
 
+### 变更
+
+- **`lib/` 不再提交进 git**：构建产物改为按需生成（`npm install` 触发 `prepare`；`npm test` 触发 `pretest`；`install.ps1` 自动 `npm ci` + 构建；`dsh plugin` 走包内 `prepare` 钩子）。`.gitignore` 已忽略 `lib/`，安装脚本、文档与测试已同步更新。
+
 ### 修复
 
 - **重启后设置页不再误报 "HTTP 200" 红色错误**：`/ext/api` 路由挂载不再依赖 apply 时刻的一次性 `ctx.get("webServer")`。include 加载的条目与 web-app 组合并发启动，webServer 服务可能晚于本插件 fiber 激活——一次性读取会让路由静默丢失，设置页随后拿到 SPA 的 HTML 回退页（HTTP 200），JSON 解析失败后报出 "HTTP 200"。现在服务已就绪则立即挂载，未就绪则监听 `internal/service` 事件补挂（激活与替换都会重新触发，webServer 热重载后也会重新挂载）；无头宿主不受影响（不产生 pending fiber，行为不变，仅多一条 30s 窗口后的提示日志）。客户端坏响应文案也改为带上请求路径，不再只显示裸状态码。

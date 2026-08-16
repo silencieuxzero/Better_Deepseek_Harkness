@@ -1,4 +1,4 @@
-# install.ps1 — bootstrap better-deepseek-harness into a dsh profile (no pnpm needed).
+# install.ps1 — bootstrap better-deepseek-harness into a dsh profile (requires npm; no pnpm needed).
 # Usage: .\install.ps1 [-Profile web]
 param(
   [string]$Profile = "web"
@@ -22,6 +22,24 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 Get-ChildItem -Force -Path $here |
   Where-Object { $_.Name -ne ".git" -and $_.Name -ne "node_modules" -and $_.FullName -ne $target -and -not $_.FullName.StartsWith($target + [IO.Path]::DirectorySeparatorChar) } |
   ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force }
+
+# lib/ is not committed anymore: install the dependencies and generate the
+# build output before the profile tries to load the package.
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+  throw "npm not found: better-deepseek-harness requires npm to build lib/ during installation"
+}
+Write-Host "Installing dependencies and building lib/ ..."
+Push-Location $target
+try {
+  & npm ci --no-audit --no-fund
+  if ($LASTEXITCODE -ne 0) { throw "npm ci failed (exit $LASTEXITCODE); could not install dependencies" }
+  if (-not (Test-Path (Join-Path $target "lib\index.js"))) {
+    & npm run build
+    if ($LASTEXITCODE -ne 0) { throw "npm run build failed (exit $LASTEXITCODE); could not generate lib/" }
+  }
+} finally {
+  Pop-Location
+}
 
 # Append the insert row if absent. Match the exact row id only — a substring
 # match would also hit plugin-managed rows like `ext-center.mcp.<name>` and

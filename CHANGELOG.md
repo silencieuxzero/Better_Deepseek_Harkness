@@ -39,6 +39,10 @@ For the Chinese version, see [CHANGELOG_ZH.md](CHANGELOG_ZH.md).
   - the host-side image transcription and the vision capability bridge stay inert while `@linxin666/dsh-tool-describe-image` is active (it owns image understanding there);
   - detection is by loader entry id or package name and only counts ACTIVE, non-disabled fibers — a pending or failed family plugin keeps this plugin's own surface; the host gate re-checks once the loader tree settles. Pure logic in `src/compat.ts` (family registry, detection, suppression mapping), mirrored inline in `src/client.js`, covered by `tests/compat.spec.ts`, `tests/compat-client.spec.ts` and new `tests/host-wiring.spec.ts` cases.
 
+### Changed
+
+- **`lib/` is no longer committed to git**: the build output is generated on demand (`npm install` runs `prepare`; `npm test` runs `pretest`; `install.ps1` runs `npm ci` + build; `dsh plugin` uses the package `prepare` hook). `.gitignore` now ignores `lib/`, and the install/docs/tests have been updated accordingly.
+
 ### Fixed
 
 - **Settings page no longer shows a bogus "HTTP 200" error after a restart**: `/ext/api` route mounting no longer relies on a one-shot `ctx.get("webServer")` at apply time. The include-loaded fiber can apply before the web-app composition activates its `webServer` service (a boot race), which silently dropped every `/ext/api` route — the settings page then received the SPA's HTML fallback (HTTP 200) and reported "HTTP 200" after a failed JSON parse. The routes now mount eagerly when the service is ready and otherwise wait on the `internal/service` event (re-emitted on activation and replacement, so a webServer hot-reload re-mounts them too); headless hosts are unaffected (no pending fiber, same skip behavior, one delayed log line). The client also reports the failing URL instead of a bare status code.

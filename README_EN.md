@@ -191,7 +191,7 @@ A plugin written for the DeepSeek Harness Web UI: install, uninstall and enable/
 
 ## Installation
 
-### Method 1: Git install (recommended; requires git, no pnpm / npm)
+### Method 1: Git install (recommended; requires git and npm)
 
 Clone this repository, then run the one-click install script inside it:
 
@@ -201,14 +201,17 @@ cd Better_Deepseek_Harness
 .\install.ps1                # installs into the web profile by default; other profiles: .\install.ps1 -Profile agents
 ```
 
-The script copies the package to the shared module root `~/.dsh/profiles/node_modules/better-deepseek-harness` and appends the `ext-center` row (deduplicated by id) to the profile's `cordis.patch.yml`. The config listener hot-applies it within seconds: the host-side API is available immediately, and "Settings → Better DeepSeek Harness" appears after refreshing the browser.
+The script copies the package to the shared module root `~/.dsh/profiles/node_modules/better-deepseek-harness`, runs `npm ci`, and generates `lib/` (`lib/` is no longer committed to git). It then appends the `ext-center` row (deduplicated by id) to the profile's `cordis.patch.yml`. The config listener hot-applies it within seconds: the host-side API is available immediately, and "Settings → Better DeepSeek Harness" appears after refreshing the browser.
 
-### Method 2: Manual install (no git / pnpm / npm)
+### Method 2: Manual install (requires git and npm)
 
 Copy the whole `better-deepseek-harness` directory to the shared module root (the directory name of the git clone is `Better_Deepseek_Harness` — copy it under whatever name you actually have):
 
 ```powershell
 Copy-Item -Recurse Better_Deepseek_Harness "$HOME\.dsh\profiles\node_modules\better-deepseek-harness"
+cd "$HOME\.dsh\profiles\node_modules\better-deepseek-harness"
+npm ci
+npm run build
 ```
 
 Then append to the profile's `cordis.patch.yml` (e.g. `~/.dsh/profiles/web/cordis.patch.yml`):
@@ -235,7 +238,7 @@ You can also install directly from the Git repository (requires git):
 dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepseek_Harness.git
 ```
 
-The patch file declared in the package's `dsh.bundle.patch` (in `package.json`, i.e. `cordis.patch.yml`) inserts a row with the same id (`ext-center`), which is deduplicated by id against methods 1 and 2 — no conflict.
+The patch file declared in the package's `dsh.bundle.patch` (in `package.json`, i.e. `cordis.patch.yml`) inserts a row with the same id (`ext-center`), which is deduplicated by id against methods 1 and 2 — no conflict. Since `lib/` is no longer committed, the `prepare` hook builds it automatically during installation.
 
 ## Deployment Configuration (the `config` block of the `ext-center` row)
 
