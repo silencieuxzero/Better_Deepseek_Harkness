@@ -239,7 +239,7 @@ The patch file declared in the package's `dsh.bundle.patch` (in `package.json`, 
 
 ## Deployment Configuration (the `config` block of the `ext-center` row)
 
-All deployment-tunable behavior is collected in the `config:` block of the `ext-center` row in `cordis.patch.yml`, validated with schemastery: every field carries its own default and legal range, and an illegal value makes the plugin **fail to load with a clear error** (fail loudly rather than drift silently). Safety invariants (request body 2 MiB, file editor 1 MiB, single terminal write 4096 chars, git single-batch paths 500, archive-delete single batch 500, single optimize-input text 100 KiB) stay fixed and are not configurable.
+All deployment-tunable behavior is collected in the `config:` block of the `ext-center` row in `cordis.patch.yml`, validated with schemastery: every field carries its own default and legal range, and an illegal value makes the plugin **fail to load with a clear error** (fail loudly rather than drift silently). Safety invariants (request body 2 MiB, skill URL download 1 MiB, plugin tgz download 64 MiB, file editor 1 MiB, single terminal write 4096 chars, git single-batch paths 500, archive-delete single batch 500, single optimize-input text 100 KiB) stay fixed and are not configurable.
 
 ```yaml
 - insert:
@@ -337,7 +337,7 @@ All of the above fields may be omitted (omitting means the default is used); the
 | `POST /ext/api/git/unstage` | `{paths:[...]}` unstage (git restore --staged) |
 | `POST /ext/api/git/unstage-all` | Unstage everything (git reset) |
 | `POST /ext/api/git/commit` | `{message}` commit (git commit -m) |
-| `POST /ext/api/git/discard` | `{paths:[...]}` discard changes (git checkout --; untracked files are deleted directly, directories rejected) |
+| `POST /ext/api/git/discard` | `{paths:[...], staged?}` discard changes (unstaged: git checkout --; staged: git restore --staged --worktree; untracked files are deleted directly, directories rejected) |
 | `POST /ext/api/git/checkout` | `{branch}` switch branch (whitelist-validated name) |
 | `POST /ext/api/git/pull` | Pull (--ff-only; timeout = `git.timeoutMs`, default 60 s) |
 | `POST /ext/api/git/push` | Push (timeout = `git.timeoutMs`, default 60 s) |

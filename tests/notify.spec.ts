@@ -4,7 +4,6 @@ import {
   NOTIFY_BODY_CAP,
   NOTIFY_DEFAULTS,
   NOTIFY_ERROR_CAP,
-  NOTIFY_TITLE_CAP,
   buildDoneBody,
   buildQuestionBody,
   buildToastScript,

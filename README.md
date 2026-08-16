@@ -238,7 +238,7 @@ dsh plugin --profile web add git+https://github.com/silencieuxzero/Better_Deepse
 
 ## 部署配置（ext-center 行的 config 块）
 
-部署可调的行为全部收敛在 `cordis.patch.yml` 中 `ext-center` 行的 `config:` 块，用 schemastery 校验：每个字段自带默认值与合法范围，非法值会让插件**加载失败并给出明确报错**（宁可响亮失败，不静默漂移）。安全不变量（请求体 2 MiB、文件编辑器 1 MiB、终端单次写入 4096 字符、git 单批路径 500 条、归档删除单批 500 条、输入优化单次文本 100 KiB）保持固定、不可配置。
+部署可调的行为全部收敛在 `cordis.patch.yml` 中 `ext-center` 行的 `config:` 块，用 schemastery 校验：每个字段自带默认值与合法范围，非法值会让插件**加载失败并给出明确报错**（宁可响亮失败，不静默漂移）。安全不变量（请求体 2 MiB、技能 URL 下载 1 MiB、插件 tgz 下载 64 MiB、文件编辑器 1 MiB、终端单次写入 4096 字符、git 单批路径 500 条、归档删除单批 500 条、输入优化单次文本 100 KiB）保持固定、不可配置。
 
 ```yaml
 - insert:

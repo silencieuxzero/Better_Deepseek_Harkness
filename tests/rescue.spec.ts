@@ -322,6 +322,24 @@ describe("buildRestorePlan", () => {
     expect(restored).toEqual([]);
   });
 
+  it("restores every patch row carrying the selected plugin name", () => {
+    const patch = [
+      { id: "ext-center", name: "better-deepseek-harness" },
+      { insert: [{ id: "a-1", name: "a-plugin" }, { id: "a-2", name: "a-plugin" }] },
+      { id: "b-plugin", name: "b-plugin" }
+    ];
+    const applied = buildRescuePlan(patch, [], "better-deepseek-harness", new Map(), CRASH);
+    // The plan disables both rows but the dialog lists the plugin once.
+    expect(applied.plugins).toHaveLength(2);
+    expect(applied.plugins.filter((plugin) => plugin.name === "a-plugin")).toHaveLength(1);
+    const state = appliedState(applied.plugins);
+    const { updatedList, restored } = buildRestorePlan(applied.updatedList, state, ["a-plugin"]);
+    expect(restored).toEqual(["a-plugin"]);
+    const row = updatedList.find((candidate) => Array.isArray(candidate.insert)) as { insert: Array<Record<string, unknown>> };
+    expect(row.insert.find((entry) => entry.id === "a-1")).not.toHaveProperty("disabled");
+    expect(row.insert.find((entry) => entry.id === "a-2")).not.toHaveProperty("disabled");
+  });
+
   it("restores nothing for an empty selection", () => {
     const applied = buildRescuePlan(fixturePatch(), [], "better-deepseek-harness", new Map(), CRASH);
     const state = appliedState(applied.plugins);

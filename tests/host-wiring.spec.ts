@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { apply, inject, NAME, SETTINGS_NS, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks, __setNotifyHostHooks } from "../src/index.js";
+import { apply, inject, NAME, SETTINGS_NS, materializePackage, packageEntryPoints, packageEntryExists, ensureBuiltPackage, __setRescueHostHooks, __setNotifyHostHooks, __loaderEntryActive, __loaderEntryGone } from "../src/index.js";
 
 /**
  * A minimal cordis ctx double for apply(). `baseUrl` must be a real file URL
@@ -28,7 +28,7 @@ interface MockOptions {
   /** value returned for ctx.get("sessionPersistence") (defaults to undefined). */
   sessionPersistence?: {
     list: () => Promise<Array<{ id: string }>>;
-    locate: (header: { id: string }) => { path: string };
+    locate: (header: { id: string }) => { path: string | null };
   } | undefined;
   /** value returned for ctx.get("sessions") (defaults to undefined). */
   sessions?: { get: (id: string) => unknown } | undefined;
@@ -392,6 +392,48 @@ describe("apply() wiring", () => {
   });
 
 
+  it("/rescue apply none keeps every plugin disabled without scheduling a reload", async () => {
+    const restart = vi.fn();
+    __setRescueHostHooks({ pid: 9999, isDesktop: false, scheduleRestart: restart });
+    const dir = rescueProfile({
+      patch: [
+        "- id: ext-center",
+        "  name: better-deepseek-harness",
+        "- id: boom-plugin",
+        "  name: boom-plugin",
+        "  disabled: true"
+      ].join("\n"),
+      state: JSON.stringify({
+        version: 1,
+        phase: "applied",
+        failure: { kind: "fiber-failed", message: "boom" },
+        plugins: [{ name: "boom-plugin", kind: "patch", reason: { code: "load-failed" }, id: "boom-plugin", rowIds: ["boom-plugin"] }],
+        appliedAt: "2026-08-15T00:00:00.000Z",
+        boot: { pid: 1, startedAt: 1, healthy: true, healthyAt: 2 }
+      })
+    });
+    try {
+      const registered: Array<{ name: string; handler: (invocation: { rawInput: string }) => unknown }> = [];
+      const commands = { register: vi.fn((definition: { name: string; handler: (invocation: { rawInput: string }) => unknown }) => {
+        registered.push(definition);
+        return () => {};
+      }) };
+      const { ctx, disposers } = mockCtx({ commands, baseUrl: pathToFileURL(join(dir, "cordis.patch.yml")).href });
+      apply(ctx, {});
+      const result = await registered[0]!.handler({ rawInput: "apply none" });
+      expect(result).toMatchObject({ kind: "success" });
+      const text = String((result as { text: string }).text);
+      expect(text).toContain("未触发重载");
+      expect(restart).not.toHaveBeenCalled();
+      expect(rowDisabled(rescuePatchOf(dir), "boom-plugin")).toBe(true);
+      expect(rescueStateOf(dir).phase).toBe("idle");
+      disposeAll(disposers);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      __setRescueHostHooks({ pid: null, isDesktop: null, scheduleRestart: null });
+    }
+  });
+
   it("fails loud on an invalid config block", () => {
     const { ctx } = mockCtx();
     expect(() => apply(ctx, { tree: { maxEntries: 0 } })).toThrow(/invalid config/);
@@ -546,6 +588,23 @@ describe("llm/stream image transcription wrapper", () => {
     const next = vi.fn(() => downstream);
     const result = listener(
       { provider: "main", model: "m", messages: [{ role: "user", content: [{ type: "image", attachment: {} }] }] },
+      next
+    );
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(result).toBe(downstream);
+  });
+
+  it("forwards next() for malformed message content instead of throwing", async () => {
+    // A hand-crafted/malformed request must not crash the llm/stream
+    // waterfall: non-array content simply contains no transcribable images.
+    const listener = captureListener({
+      stored: { vision: { enabled: true, provider: "vp", model: "vm" } },
+      llm: { stream: vi.fn(() => streamOf([])) }
+    });
+    const downstream = streamOf([{ type: "finish", reason: { kind: "ok" } }]);
+    const next = vi.fn(() => downstream);
+    const result = listener(
+      { provider: "main", model: "m", messages: [null, { role: "user", content: { type: "image" } }] },
       next
     );
     expect(next).toHaveBeenCalledTimes(1);
@@ -836,6 +895,18 @@ describe("route dispatcher", () => {
     expect(res.writeHead).toHaveBeenCalledWith(403, expect.anything());
   });
 
+  it("fails closed when a hand-edited settings file stores a malformed allowLan", async () => {
+    const { ctx } = mockCtx({ stored: { allowLan: "true" } });
+    apply(ctx, {});
+    const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+    const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+    const res = fakeRes();
+    await handler(fakeReq("POST", "/ext/api/tree/write", "10.0.0.5"), res);
+    expect(res.writeHead).toHaveBeenCalledWith(403, expect.anything());
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.error.code).toBe("forbidden");
+  });
+
   it("rejects unknown paths with 404", async () => {
     const handler = await mountedHandler();
     const res = fakeRes();
@@ -861,6 +932,23 @@ describe("route dispatcher", () => {
     const res = fakeRes();
     await handler(fakeReq("POST", "/ext/api/state", "127.0.0.1"), res);
     expect(res.writeHead).toHaveBeenCalledWith(405, expect.anything());
+  });
+
+  it("returns a structured 413 for an oversized JSON body", async () => {
+    const handler = await mountedHandler();
+    const res = fakeRes();
+    const req = fakeReq("POST", "/ext/api/config", "127.0.0.1") as ReturnType<typeof fakeReq> & {
+      on: (event: string, cb: (chunk?: Buffer) => void) => void;
+    };
+    req.on = (event, cb) => {
+      if (event === "data") cb(Buffer.alloc(2 * 1024 * 1024 + 1));
+      if (event === "end") cb();
+    };
+    await handler(req, res);
+    expect(res.writeHead).toHaveBeenCalledWith(413, expect.anything());
+    const body = JSON.parse(res.end.mock.calls[0][0]);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("payload-too-large");
   });
 
   it("rejects a malformed percent-encoded path with 400", async () => {
@@ -965,29 +1053,34 @@ describe("archive delete route", () => {
   }
 
   it("deletes archived sessions and detaches them from workspaces", async () => {
-    const workspace = {
-      sessionIds: ["a"],
-      detachSession: vi.fn(async () => {})
-    };
-    const registry = {
-      archivedSessionIds: ["a", "b"],
-      list: vi.fn(() => [workspace])
-    };
-    const persistence = {
-      list: vi.fn(async () => [{ id: "a" }, { id: "b" }]),
-      locate: vi.fn((header: { id: string }) => ({ path: join("sessions", header.id, "session.jsonl.zstd") }))
-    };
-    const sessions = { get: vi.fn(() => undefined) };
-    const handler = await mountedArchiveHandler({ workspaceRegistry: registry, sessionPersistence: persistence, sessions });
-    const res = fakeRes();
-    await handler(fakeReqWithBody("POST", "/ext/api/archive/delete", { ids: ["a", "b"] }), res);
-    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
-    const body = JSON.parse(res.end.mock.calls[0][0]);
-    expect(body.ok).toBe(true);
-    expect(body.value).toEqual({ deleted: ["a", "b"], skipped: [], count: 2 });
-    expect(workspace.detachSession).toHaveBeenCalledWith("a");
-    expect(workspace.detachSession).not.toHaveBeenCalledWith("b");
-    expect(persistence.locate).toHaveBeenCalledTimes(2);
+    const root = mkdtempSync(join(tmpdir(), "dsh-archive-"));
+    try {
+      const workspace = {
+        sessionIds: ["a"],
+        detachSession: vi.fn(async () => {})
+      };
+      const registry = {
+        archivedSessionIds: ["a", "b"],
+        list: vi.fn(() => [workspace])
+      };
+      const persistence = {
+        list: vi.fn(async () => [{ id: "a" }, { id: "b" }]),
+        locate: vi.fn((header: { id: string }) => ({ path: join(root, "sessions", header.id, "session.jsonl.zstd") }))
+      };
+      const sessions = { get: vi.fn(() => undefined) };
+      const handler = await mountedArchiveHandler({ workspaceRegistry: registry, sessionPersistence: persistence, sessions });
+      const res = fakeRes();
+      await handler(fakeReqWithBody("POST", "/ext/api/archive/delete", { ids: ["a", "b"] }), res);
+      expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(true);
+      expect(body.value).toEqual({ deleted: ["a", "b"], skipped: [], count: 2 });
+      expect(workspace.detachSession).toHaveBeenCalledWith("a");
+      expect(workspace.detachSession).not.toHaveBeenCalledWith("b");
+      expect(persistence.locate).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects ids that are not in the archive set", async () => {
@@ -1001,20 +1094,95 @@ describe("archive delete route", () => {
   });
 
   it("skips live (attached) archived sessions instead of deleting them", async () => {
-    const workspace = { sessionIds: ["a"], detachSession: vi.fn(async () => {}) };
-    const registry = { archivedSessionIds: ["a"], list: vi.fn(() => [workspace]) };
-    const persistence = {
-      list: vi.fn(async () => [{ id: "a" }]),
-      locate: vi.fn((header: { id: string }) => ({ path: join("sessions", header.id, "session.jsonl.zstd") }))
-    };
-    const sessions = { get: vi.fn(() => ({ id: "a" })) };
-    const handler = await mountedArchiveHandler({ workspaceRegistry: registry, sessionPersistence: persistence, sessions });
-    const res = fakeRes();
-    await handler(fakeReqWithBody("POST", "/ext/api/archive/delete", { ids: ["a"] }), res);
-    const body = JSON.parse(res.end.mock.calls[0][0]);
-    expect(body.ok).toBe(true);
-    expect(body.value).toEqual({ deleted: [], skipped: ["a"], count: 0 });
-    expect(workspace.detachSession).not.toHaveBeenCalled();
+    const root = mkdtempSync(join(tmpdir(), "dsh-archive-"));
+    try {
+      const workspace = { sessionIds: ["a"], detachSession: vi.fn(async () => {}) };
+      const registry = { archivedSessionIds: ["a"], list: vi.fn(() => [workspace]) };
+      const persistence = {
+        list: vi.fn(async () => [{ id: "a" }]),
+        locate: vi.fn((header: { id: string }) => ({ path: join(root, "sessions", header.id, "session.jsonl.zstd") }))
+      };
+      const sessions = { get: vi.fn(() => ({ id: "a" })) };
+      const handler = await mountedArchiveHandler({ workspaceRegistry: registry, sessionPersistence: persistence, sessions });
+      const res = fakeRes();
+      await handler(fakeReqWithBody("POST", "/ext/api/archive/delete", { ids: ["a"] }), res);
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(true);
+      expect(body.value).toEqual({ deleted: [], skipped: ["a"], count: 0 });
+      expect(workspace.detachSession).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preflights every session location before deleting any", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dsh-archive-"));
+    try {
+      const firstDir = join(root, "sessions", "a");
+      mkdirSync(firstDir, { recursive: true });
+      const marker = join(firstDir, "session.jsonl.zstd");
+      writeFileSync(marker, "keep me");
+      const registry = { archivedSessionIds: ["a", "b"], list: vi.fn(() => []) };
+      const persistence = {
+        list: vi.fn(async () => [{ id: "a" }, { id: "b" }]),
+        locate: vi.fn((header: { id: string }) => header.id === "a"
+          ? { path: marker }
+          : { path: null })
+      };
+      const handler = await mountedArchiveHandler({ workspaceRegistry: registry, sessionPersistence: persistence });
+      const res = fakeRes();
+      await handler(fakeReqWithBody("POST", "/ext/api/archive/delete", { ids: ["a", "b"] }), res);
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("archive-locate");
+      // The valid first session was located but must not have been deleted.
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("plugin install rollback", () => {
+  it("restores the previous package when the patch transaction fails during a reinstall", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dsh-plugin-"));
+    try {
+      const profileDir = join(root, "profile");
+      const sourceDir = join(root, "source");
+      const target = join(root, "node_modules", "sample-plugin");
+      mkdirSync(profileDir, { recursive: true });
+      mkdirSync(sourceDir, { recursive: true });
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(profileDir, "package.json"), JSON.stringify({ name: "profile", private: true, dsh: { profile: { bundles: [] } } }));
+      // An invalid patch makes the serialized patch write fail AFTER the new
+      // package has been copied into place.
+      writeFileSync(join(profileDir, "cordis.patch.yml"), "this is: not: [valid: yaml\n");
+      writeFileSync(join(profileDir, ".dsh-ext-center.json"), JSON.stringify({
+        version: 1,
+        plugins: { "sample-plugin": { version: "1.0.0", source: { kind: "npm", spec: "sample-plugin@1" }, rows: [] } }
+      }));
+      writeFileSync(join(target, "package.json"), JSON.stringify({ name: "sample-plugin", version: "1.0.0", main: "index.js" }));
+      writeFileSync(join(target, "index.js"), "export const version = 1;\n");
+      writeFileSync(join(sourceDir, "package.json"), JSON.stringify({ name: "sample-plugin", version: "2.0.0", main: "index.js" }));
+      writeFileSync(join(sourceDir, "index.js"), "export const version = 2;\n");
+
+      const { ctx, disposers } = mockCtx({ baseUrl: pathToFileURL(join(profileDir, "package.json")).href });
+      apply(ctx, {});
+      const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+      const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+      const res = fakeRes();
+      await handler(fakeReqWithBody("POST", "/ext/api/plugin/install", {
+        source: { kind: "folder", path: sourceDir }
+      }), res);
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("patch-invalid");
+      // The failed reinstall must have restored the previous package.
+      expect(readFileSync(join(target, "index.js"), "utf8")).toContain("version = 1");
+      disposeAll(disposers);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1098,6 +1266,23 @@ describe("config route", () => {
     const ops = settings.mutate.mock.calls[0][1] as Array<{ value: Record<string, unknown> }>;
     expect(ops[0].value).not.toHaveProperty("apiKey");
     expect(JSON.parse(res.end.mock.calls[0][0]).ok).toBe(true);
+  });
+
+  it("rejects malformed vision scalar fields", async () => {
+    const { handler } = await mountedConfigHandler();
+    for (const vision of [
+      { enabled: "yes" },
+      { provider: 42 },
+      { model: {} },
+      { prompt: [] },
+      { apiUrl: false }
+    ]) {
+      const res = fakeRes();
+      await handler(fakeReqWithBody("POST", "/ext/api/config", { vision }), res);
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("bad-request");
+    }
   });
 
   it("rejects an apiKey with control bytes", async () => {
@@ -1283,6 +1468,20 @@ describe("tavily search tool", () => {
     }
   });
 
+  it("applies the Tavily timeout even when the runner supplies no signal", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, json: async () => ({ results: [] }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = registeredTool({ stored: { tavily: { enabled: true, apiKey: "tvly-" + "a".repeat(32) } } });
+      await tool!.execute({ query: "q" }, {} as { signal: AbortSignal });
+      const init = fetchMock.mock.calls[0][1] as { signal?: AbortSignal };
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal?.aborted).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("passes search depth and raw-content settings through to the API", async () => {
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, json: async () => ({ results: [{ url: "https://a.example", raw_content: "<p>raw</p>" }] }) }));
     vi.stubGlobal("fetch", fetchMock);
@@ -1420,6 +1619,20 @@ describe("github api tools", () => {
     expect(register.mock.calls.filter((call) => String((call[0] as { name: string }).name).startsWith("github_"))).toHaveLength(5);
     for (const disposer of disposers) disposer();
     expect(dispose).toHaveBeenCalledTimes(5);
+  });
+
+  it("applies the GitHub timeout even when the runner supplies no signal", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, json: async () => ({ full_name: "o/r" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tool = githubTools().github_repo;
+      await tool.execute({ repo: "o/r" }, {} as { signal: AbortSignal });
+      const init = fetchMock.mock.calls[0][1] as { signal?: AbortSignal };
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal?.aborted).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("executes github_repo and maps the response without auth headers", async () => {
@@ -1640,6 +1853,32 @@ describe("config route (tavily)", () => {
     const tavily = body.value.config.tavily as Record<string, unknown>;
     expect(tavily).not.toHaveProperty("apiKey");
     expect(tavily.apiKeyConfigured).toBe(true);
+  });
+
+  it("tolerates malformed sidecar plugin records in /ext/api/state", async () => {
+    // A hand-edited .dsh-ext-center.json must not crash the settings page;
+    // malformed records degrade to empty rows instead.
+    const dir = mkdtempSync(join(tmpdir(), "dsh-state-"));
+    try {
+      writeFileSync(join(dir, ".dsh-ext-center.json"), JSON.stringify({
+        version: 1,
+        plugins: { broken: null, good: { version: "1.2.3", rows: [], source: { kind: "npm", spec: "good" } } }
+      }));
+      const { ctx } = mockCtx({ baseUrl: pathToFileURL(join(dir, "package.json")).href });
+      apply(ctx, {});
+      const register = ctx.webServer.register as ReturnType<typeof vi.fn>;
+      const handler = register.mock.calls[0][0].handler as (req: unknown, res: unknown) => Promise<void>;
+      const res = fakeRes();
+      await handler(fakeReq("GET", "/ext/api/state", "127.0.0.1"), res);
+      const body = JSON.parse(res.end.mock.calls[0][0]);
+      expect(body.ok).toBe(true);
+      const installed = body.value.plugins.installed as Array<Record<string, unknown>>;
+      expect(installed).toHaveLength(2);
+      expect(installed.find((record) => record.name === "broken")).toMatchObject({ version: "", enabled: true, rows: 0 });
+      expect(installed.find((record) => record.name === "good")).toMatchObject({ version: "1.2.3", enabled: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1930,6 +2169,25 @@ describe("config route (notify)", () => {
 
 /* ─────────────────── git source build fallback ─────────────────── */
 
+describe("loader live-state helpers", () => {
+  it("accepts only ACTIVE and enabled entries as live", () => {
+    expect(__loaderEntryActive({ disabled: false, fiber: { state: 2 } })).toBe(true);
+    expect(__loaderEntryActive({ disabled: true, fiber: { state: 2 } })).toBe(false);
+    expect(__loaderEntryActive({ disabled: false, fiber: { state: 1 } })).toBe(false);
+    expect(__loaderEntryActive({ disabled: false, fiber: { state: 3 } })).toBe(false);
+    expect(__loaderEntryActive({ disabled: false })).toBe(false);
+    expect(__loaderEntryActive(undefined)).toBe(false);
+  });
+
+  it("treats absent, disposed, and unloading entries as gone", () => {
+    expect(__loaderEntryGone(undefined)).toBe(true);
+    expect(__loaderEntryGone({ fiber: { state: 4 } })).toBe(true);
+    expect(__loaderEntryGone({ fiber: { state: 5 } })).toBe(true);
+    expect(__loaderEntryGone({ fiber: { state: 2 } })).toBe(false);
+    expect(__loaderEntryGone({ fiber: { state: 0 } })).toBe(false);
+  });
+});
+
 describe("packageEntryPoints", () => {
   it("reads the main field", () => {
     expect(packageEntryPoints({ main: "lib/index.js" })).toEqual(["lib/index.js"]);
@@ -1937,6 +2195,11 @@ describe("packageEntryPoints", () => {
 
   it("reads a string exports entry", () => {
     expect(packageEntryPoints({ exports: { ".": "./lib/index.js" } })).toEqual(["./lib/index.js"]);
+  });
+
+  it("reads the shorthand string exports form", () => {
+    expect(packageEntryPoints({ exports: "./index.js" })).toEqual(["./index.js"]);
+    expect(packageEntryPoints({ main: "lib/index.js", exports: "./index.js" })).toEqual(["lib/index.js", "./index.js"]);
   });
 
   it("prefers import over require inside a condition object", () => {
@@ -2130,6 +2393,48 @@ describe("materializePackage source metadata", () => {
       expect(result.manifest.name).toBe("x");
       expect(result.builtFromSource).toBe(false);
       expect(existsSync(join(staging, "package.json"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an oversized tarball URL before buffering it without bound", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dsh-ext-"));
+    try {
+      const cancelled = vi.fn(async () => {});
+      const body = {
+        getReader: vi.fn(() => ({
+          read: vi.fn(async () => ({ done: false, value: { length: 64 * 1024 * 1024 + 1 } })),
+          cancel: cancelled
+        }))
+      };
+      const fetchMock = vi.fn(async () => ({ ok: true, status: 200, body }));
+      vi.stubGlobal("fetch", fetchMock);
+      try {
+        const staging = join(root, "staging");
+        await expect(materializePackage({ kind: "url", url: "https://x.test/pkg.tgz" }, staging)).rejects.toMatchObject({
+          code: "download-too-large"
+        });
+        expect(cancelled).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a folder source with a missing path instead of copying the process cwd", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dsh-ext-"));
+    try {
+      const staging = join(root, "staging");
+      await expect(materializePackage({ kind: "folder", path: "" }, staging)).rejects.toMatchObject({
+        code: "source-not-found",
+        message: expect.stringContaining("non-empty path")
+      });
+      await expect(materializePackage({ kind: "folder" }, staging)).rejects.toMatchObject({
+        code: "source-not-found"
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -2328,7 +2633,8 @@ describe("rescue mode watchdog", () => {
       try {
         // the applied plan over-protected the bundle: nothing disabled yet
         expect(rowDisabled(rescuePatchOf(dir), "my-frontdoor")).toBe(false);
-        await vi.advanceTimersByTimeAsync(3000);
+        // settleMs + the serialized patch writer's 800 ms gap
+        await vi.advanceTimersByTimeAsync(5000);
         expect(rowDisabled(rescuePatchOf(dir), "my-frontdoor")).toBe(true);
         const state = rescueStateOf(dir);
         const bundle = state.plugins.find((plugin: { name: string }) => plugin.name === "my-frontdoor");
@@ -2359,7 +2665,8 @@ describe("rescue mode watchdog", () => {
       });
       apply(ctx, { rescue: { enabled: true, settleMs: 3000 } });
       try {
-        await vi.advanceTimersByTimeAsync(3000);
+        // settleMs + the serialized patch writer's 800 ms gap
+        await vi.advanceTimersByTimeAsync(5000);
         expect(rowDisabled(rescuePatchOf(dir), "my-frontdoor")).toBe(false);
         const state = rescueStateOf(dir);
         expect(state.plugins.map((plugin: { name: string }) => plugin.name)).not.toContain("my-frontdoor");

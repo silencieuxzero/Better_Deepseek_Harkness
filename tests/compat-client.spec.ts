@@ -32,4 +32,17 @@ describe("client.js dsh-web-ui compat table", () => {
       expect(client, `client.js must know the ${key} surface key`).toContain(key);
     }
   });
+
+  it("bounds API requests with a client-side timeout", () => {
+    expect(client).toContain("createRequestSignal");
+    expect(client).toContain("API_DEFAULT_TIMEOUT_MS");
+    expect(client).toContain("API_INSTALL_TIMEOUT_MS");
+    expect(client).toContain("request timed out");
+  });
+
+  it("keeps re-checking the loader until late family bundles settle", () => {
+    expect(client).toContain("watcherTimer");
+    expect(client).toContain("syncSurfaces");
+    expect(client).toContain("disposeSurface");
+  });
 });

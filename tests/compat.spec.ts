@@ -14,7 +14,6 @@ function view(id: string, name: string, fiberState?: number, disabled?: boolean)
 }
 
 const AIONUI = view("ui-dsh-aionui-panel", "@linxin666/dsh-client-ui-aionui-panel", 2);
-const GIT_GRAPH = view("ui-git-graph", "@linxin666/dsh-client-ui-git-graph", 2);
 const SSH = view("ssh", "@linxin666/dsh-ssh", 2);
 const DESCRIBE_IMAGE = view("describe-image", "@linxin666/dsh-tool-describe-image", 2);
 
